@@ -1,0 +1,44 @@
+# Local configuration and secrets
+config.json
+secrets.env
+.env
+.env.*
+!secrets.example.env
+!*.example.env
+
+# Mutable state
+runtime/
+data/
+logs/
+archive/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# Python and coverage
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Web and local tools
+node_modules/
+web/dist/
+dist/
+build/
+web/tsconfig.tsbuildinfo
+.vscode/
+.idea/
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+*.egg-info/
