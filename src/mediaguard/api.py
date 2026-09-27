@@ -27,6 +27,19 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
     def activity():
         return runtime.activity.recent()
 
+    @app.get("/api/protection")
+    def protection():
+        config = runtime.config
+        return {"enabled": config.protection_enabled, "action": "DELETE",
+                "channel_ids": [str(value) for value in config.protected_channel_ids],
+                "notifications_enabled": config.notifications_enabled,
+                "detection_channel_id": str(config.detection_channel_id) if config.detection_channel_id else None,
+                "media_types": ["MP3", "WAV", "FLAC", "Ogg Opus", "Ogg Vorbis", "M4A"]}
+
+    @app.get("/api/detections")
+    def detections():
+        return runtime.database.recent_enforcements()
+
     if web_dist and web_dist.exists():
         app.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="assets")
 

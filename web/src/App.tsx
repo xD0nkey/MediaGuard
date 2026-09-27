@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-type Section = "Overview" | "Cases" | "Rules" | "Activity" | "Settings";
+type Section =
+  "Overview" | "Detections" | "Protection" | "Activity" | "Settings";
 type Status = {
   app: string;
   uptime_seconds: number;
@@ -15,10 +16,30 @@ type Status = {
   services: { name: string; state: string }[];
 };
 type Event = { at: string; category: string; code: string };
+type Protection = {
+  enabled: boolean;
+  action: string;
+  channel_ids: string[];
+  notifications_enabled: boolean;
+  detection_channel_id: string | null;
+  media_types: string[];
+};
+type Detection = {
+  at: string;
+  guild_id: string;
+  channel_id: string;
+  message_id: string;
+  author_id: string;
+  media_type: string;
+  source: string;
+  mode: string;
+  deletion: string;
+  notification: string;
+};
 const sections: Section[] = [
   "Overview",
-  "Cases",
-  "Rules",
+  "Detections",
+  "Protection",
   "Activity",
   "Settings",
 ];
@@ -26,17 +47,24 @@ const sections: Section[] = [
 function useData() {
   const [status, setStatus] = useState<Status | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
+  const [protection, setProtection] = useState<Protection | null>(null);
+  const [detections, setDetections] = useState<Detection[]>([]);
   const [error, setError] = useState(false);
   useEffect(() => {
     const refresh = async () => {
       try {
-        const [s, a] = await Promise.all([
+        const [s, a, p, d] = await Promise.all([
           fetch("/api/status"),
           fetch("/api/activity"),
+          fetch("/api/protection"),
+          fetch("/api/detections"),
         ]);
-        if (!s.ok || !a.ok) throw new Error("API unavailable");
+        if (!s.ok || !a.ok || !p.ok || !d.ok)
+          throw new Error("API unavailable");
         setStatus(await s.json());
         setEvents(await a.json());
+        setProtection(await p.json());
+        setDetections(await d.json());
         setError(false);
       } catch {
         setError(true);
@@ -46,7 +74,7 @@ function useData() {
     const timer = window.setInterval(refresh, 10000);
     return () => window.clearInterval(timer);
   }, []);
-  return { status, events, error };
+  return { status, events, protection, detections, error };
 }
 
 function ActivityList({ events }: { events: Event[] }) {
@@ -76,7 +104,7 @@ function duration(seconds: number) {
 
 export default function App() {
   const [section, setSection] = useState<Section>("Overview");
-  const { status, events, error } = useData();
+  const { status, events, protection, detections, error } = useData();
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -188,26 +216,101 @@ export default function App() {
             </section>
           </div>
         )}
-        {(section === "Cases" || section === "Rules") && (
+        {section === "Protection" && (
           <div className="content">
             <div className="page-heading">
-              <h1>{section}</h1>
+              <h1>Protection</h1>
+              <p>Current audio-file protection settings.</p>
+            </div>
+            <section className="full-panel protection-panel">
+              <dl className="status-list">
+                <div>
+                  <dt>Status</dt>
+                  <dd>
+                    {protection
+                      ? protection.enabled
+                        ? "Enabled"
+                        : "Disabled"
+                      : "Unknown"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Protected channels</dt>
+                  <dd>
+                    {protection
+                      ? protection.channel_ids.length
+                        ? protection.channel_ids.join(", ")
+                        : "All guild text channels"
+                      : "Unknown"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Enforcement</dt>
+                  <dd>{protection ? "Delete matching messages" : "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Detection notifications</dt>
+                  <dd>
+                    {protection
+                      ? protection.notifications_enabled
+                        ? "Enabled"
+                        : "Disabled"
+                      : "Unknown"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Detection channel</dt>
+                  <dd>
+                    {protection?.detection_channel_id ?? "Not configured"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Detected media types</dt>
+                  <dd>{protection?.media_types.join(", ") ?? "Unknown"}</dd>
+                </div>
+              </dl>
               <p>
-                {section === "Cases"
-                  ? "Moderation case management"
-                  : "Deterministic inspection rules"}
+                Update protection in local config.json and restart MediaGuard to
+                apply changes.
+              </p>
+            </section>
+          </div>
+        )}
+        {section === "Detections" && (
+          <div className="content">
+            <div className="page-heading">
+              <h1>Detections</h1>
+              <p>
+                Recent audio matches and their recorded enforcement outcomes.
               </p>
             </div>
-            <div className="placeholder">
-              <span className="placeholder-icon" aria-hidden="true">
-                ◇
-              </span>
-              <h2>Not implemented yet</h2>
-              <p>
-                {section} will be built in a later implementation phase. No
-                moderation behavior is active in this bootstrap.
-              </p>
-            </div>
+            <section className="full-panel detections-panel">
+              {detections.length ? (
+                <ol className="detection-list">
+                  {detections.map((item) => (
+                    <li key={item.message_id}>
+                      <div>
+                        <strong>{item.media_type.toUpperCase()}</strong>
+                        <span>
+                          {item.source} · {item.mode}
+                        </span>
+                        <time>{new Date(item.at).toLocaleString()}</time>
+                      </div>
+                      <p>
+                        Guild {item.guild_id} · Channel {item.channel_id} ·
+                        Message {item.message_id} · User {item.author_id}
+                      </p>
+                      <small>
+                        Deletion: {item.deletion.replaceAll("_", " ")} ·
+                        Notification: {item.notification.replaceAll("_", " ")}
+                      </small>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="empty">No matching audio has been recorded.</p>
+              )}
+            </section>
           </div>
         )}
         {section === "Activity" && (

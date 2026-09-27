@@ -181,7 +181,7 @@ def test_no_body_or_attachment_content_is_logged_or_persisted(tmp_path):
     assert "private phrase" not in activity
     assert "media_match_observed" in activity
     with runtime.database.connect() as connection:
-        assert [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")] == ["schema_migrations"]
+        assert {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {"schema_migrations", "enforcement_events"}
     runtime.stop()
 
 

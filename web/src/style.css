@@ -307,6 +307,52 @@ main {
   font-size: 13px;
   padding: 10px 24px;
 }
+.protection-panel p {
+  margin: 0 24px 24px;
+  color: #a3b4c2;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.protection-panel dd {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.detection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 24px;
+}
+.detection-list li {
+  padding: 18px 0;
+  border-bottom: 1px solid #283746;
+}
+.detection-list li:last-child {
+  border-bottom: 0;
+}
+.detection-list li div {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.detection-list strong {
+  font-size: 14px;
+}
+.detection-list span,
+.detection-list small,
+.detection-list p {
+  color: #a3b4c2;
+  font-size: 12px;
+}
+.detection-list time {
+  margin-left: auto;
+  color: #91a4b5;
+  font-size: 11px;
+}
+.detection-list p {
+  margin: 9px 0;
+  overflow-wrap: anywhere;
+}
 .error {
   margin: 20px 38px 0;
   padding: 13px 16px;

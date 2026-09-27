@@ -131,7 +131,7 @@ async def inspect_attachment(
     attachment, max_attachment_bytes: int, fetch_prefix=download_prefix, source="direct"
 ) -> InspectionResult:
     filename = attachment.filename
-    extension = PurePath(filename).suffix.lower()
+    extension = PurePath(filename).suffix.lower() if filename else None
     mime = (attachment.content_type or "").split(";", 1)[0].strip().lower() or None
     size = attachment.size
     evidence = {

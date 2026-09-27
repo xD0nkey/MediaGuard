@@ -1,9 +1,10 @@
 import asyncio
 import threading
 from datetime import datetime, timezone
-from discord import MessageReferenceType
+from discord import AllowedMentions, MessageReferenceType
 
 from .activity import Activity
+from .detection_notice import blocked_audio_embed
 from .attachments import (
     DEFAULT_MAX_ATTACHMENT_BYTES,
     InspectionResult,
@@ -36,7 +37,7 @@ def make_client(service):
 
         async def on_message(self, message):
             try:
-                await service.inspect_message(message, self.user.id if self.user else None)
+                await service.handle_message(message, self.user.id if self.user else None)
             except Exception:
                 service.activity.record("Error", "discord_intake_error")
 
@@ -51,11 +52,15 @@ class DiscordService:
         *,
         max_attachment_bytes=DEFAULT_MAX_ATTACHMENT_BYTES,
         fetch_prefix=download_prefix,
+        config=None,
+        database=None,
     ):
         self.activity = activity
         self.client_factory = client_factory
         self.max_attachment_bytes = max_attachment_bytes
         self.fetch_prefix = fetch_prefix
+        self.config = config
+        self.database = database
         self._inspection_slots = asyncio.Semaphore(4)
         self._lock = threading.RLock()
         self._thread = None
@@ -126,6 +131,60 @@ class DiscordService:
         if any(result.status is Status.UNAVAILABLE for result in results):
             self.activity.record("Error", "inspection_unavailable")
         return tuple(results)
+
+    async def handle_message(self, message, bot_user_id=None):
+        if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
+            return ()
+        if self.config and self.config.protected_channel_ids and message.channel.id not in self.config.protected_channel_ids:
+            return ()
+        results = await self.inspect_message(message, bot_user_id)
+        if not self.config or not self.config.protection_enabled or not self.database:
+            return results
+        match = next((result for result in results if result.status is Status.MATCH), None)
+        if match is None:
+            return results
+
+        if not self.database.reserve_enforcement(message, match, "DELETE"):
+            return results
+
+        member = message.guild.me
+        permissions = message.channel.permissions_for(member) if member else None
+        if not permissions or not permissions.view_channel or not permissions.manage_messages:
+            self.activity.record("Error", "delete_permission_missing")
+            return results
+
+        detection_channel = None
+        can_notify = False
+        if self.config.notifications_enabled:
+            detection_channel = message.guild.get_channel(self.config.detection_channel_id) if self.config.detection_channel_id else None
+            notify_permissions = detection_channel.permissions_for(member) if detection_channel else None
+            can_notify = bool(notify_permissions and notify_permissions.view_channel and notify_permissions.send_messages)
+
+        self.database.set_outcome(message.id, deletion="attempting")
+        try:
+            await message.delete()
+        except Exception:
+            self.database.set_outcome(message.id, deletion="failed_or_unknown")
+            self.activity.record("Error", "delete_failed")
+            return results
+        deleted_at = self.database.set_outcome(message.id, deletion="succeeded")
+        self.activity.record("Discord", "message_removed")
+
+        if self.config.notifications_enabled:
+            if not can_notify:
+                self.database.set_outcome(message.id, notification="failed")
+                self.activity.record("Error", "detection_notification_unavailable")
+                return results
+            self.database.set_outcome(message.id, notification="attempting")
+            try:
+                await detection_channel.send(embed=blocked_audio_embed(message, match, deleted_at), allowed_mentions=AllowedMentions.none())
+            except Exception:
+                self.database.set_outcome(message.id, notification="failed_or_unknown")
+                self.activity.record("Error", "detection_notification_failed")
+            else:
+                self.database.set_outcome(message.id, notification="succeeded")
+                self.activity.record("Discord", "detection_notification_sent")
+        return results
 
     def start(self, token: str | None):
         if not token:
