@@ -4,8 +4,6 @@ from threading import Lock
 
 
 class Activity:
-    """Bounded, sanitized service events; no Discord message content."""
-
     CATEGORIES = {"System", "Discord", "Error"}
 
     def __init__(self, capacity: int = 200):

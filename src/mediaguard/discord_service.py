@@ -29,8 +29,6 @@ def make_client(service):
 
 
 class DiscordService:
-    """Owns one Discord client and its asyncio loop in a dedicated thread."""
-
     def __init__(self, activity: Activity, client_factory=make_client):
         self.activity = activity
         self.client_factory = client_factory
