@@ -14,7 +14,7 @@ class Runtime:
         self.root = root
         self.activity = Activity()
         self.database = Database(database_path(root))
-        self.discord = discord or DiscordService(self.activity)
+        self.discord = discord or DiscordService(self.activity, max_attachment_bytes=self.config.max_attachment_bytes)
         self.started_at = None
 
     def start(self):

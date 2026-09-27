@@ -32,6 +32,18 @@ def test_migration_idempotent(tmp_path):
         assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 1
 
 
+def test_attachment_size_configuration(tmp_path):
+    import json
+    import pytest
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"discord": {"max_attachment_bytes": 1024}}), encoding="utf-8")
+    assert load(tmp_path).max_attachment_bytes == 1024
+    path.write_text(json.dumps({"discord": {"max_attachment_bytes": 0}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load(tmp_path)
+
+
 class FakeClient:
     def __init__(self, service):
         self.service = service
@@ -87,7 +99,7 @@ def test_runtime_and_backend(tmp_path):
 def test_runtime_imports_only_package_or_declared_dependencies():
     import ast
     root = Path(__file__).resolve().parents[1] / "src" / "mediaguard"
-    allowed = {"asyncio", "threading", "datetime", "pathlib", "collections", "json", "os", "sqlite3", "time", "fastapi", "uvicorn", "discord", "dataclasses", "urllib"}
+    allowed = {"asyncio", "threading", "datetime", "pathlib", "collections", "json", "os", "sqlite3", "time", "fastapi", "uvicorn", "discord", "dataclasses", "urllib", "enum", "aiohttp"}
     for path in root.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

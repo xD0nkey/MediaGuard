@@ -1,7 +1,16 @@
 import asyncio
 import threading
 from datetime import datetime, timezone
+from discord import MessageReferenceType
+
 from .activity import Activity
+from .attachments import (
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    InspectionResult,
+    Status,
+    download_prefix,
+    inspect_attachment,
+)
 
 
 def _now():
@@ -25,13 +34,29 @@ def make_client(service):
         async def on_resumed(self):
             service._resumed()
 
+        async def on_message(self, message):
+            try:
+                await service.inspect_message(message, self.user.id if self.user else None)
+            except Exception:
+                service.activity.record("Error", "discord_intake_error")
+
     return Client(intents=intents)
 
 
 class DiscordService:
-    def __init__(self, activity: Activity, client_factory=make_client):
+    def __init__(
+        self,
+        activity: Activity,
+        client_factory=make_client,
+        *,
+        max_attachment_bytes=DEFAULT_MAX_ATTACHMENT_BYTES,
+        fetch_prefix=download_prefix,
+    ):
         self.activity = activity
         self.client_factory = client_factory
+        self.max_attachment_bytes = max_attachment_bytes
+        self.fetch_prefix = fetch_prefix
+        self._inspection_slots = asyncio.Semaphore(4)
         self._lock = threading.RLock()
         self._thread = None
         self._loop = None
@@ -65,6 +90,42 @@ class DiscordService:
             self._gateway = "connected"
             self._reconnects += 1
         self.activity.record("Discord", "gateway_resumed")
+
+    async def inspect_message(self, message, bot_user_id=None) -> tuple[InspectionResult, ...]:
+        if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
+            return ()
+
+        attachments = [(attachment, "direct") for attachment in message.attachments]
+        results = []
+        reference = getattr(message, "reference", None)
+        if reference is not None and reference.type is MessageReferenceType.forward:
+            snapshots = message.message_snapshots
+            if not snapshots:
+                results.append(
+                    InspectionResult(Status.UNAVAILABLE, "forward_snapshot_unavailable", "forward")
+                )
+            for snapshot in snapshots:
+                attachments.extend((attachment, "forward") for attachment in snapshot.attachments)
+                if snapshot.embeds:
+                    results.append(
+                        InspectionResult(Status.UNAVAILABLE, "forward_embeds_not_inspected", "forward")
+                    )
+                if not snapshot.attachments and not snapshot.embeds:
+                    results.append(
+                        InspectionResult(Status.UNAVAILABLE, "forward_media_metadata_unavailable", "forward")
+                    )
+
+        for attachment, source in attachments:
+            async with self._inspection_slots:
+                results.append(
+                    await inspect_attachment(attachment, self.max_attachment_bytes, self.fetch_prefix, source)
+                )
+
+        if any(result.status is Status.MATCH for result in results):
+            self.activity.record("Discord", "media_match_observed")
+        if any(result.status is Status.UNAVAILABLE for result in results):
+            self.activity.record("Error", "inspection_unavailable")
+        return tuple(results)
 
     def start(self, token: str | None):
         if not token:
