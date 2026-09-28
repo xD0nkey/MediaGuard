@@ -29,7 +29,7 @@ def test_migration_idempotent(tmp_path):
     db.migrate()
     db.migrate()
     with db.connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 10
 
 
 def test_attachment_size_configuration(tmp_path):
@@ -99,7 +99,7 @@ def test_runtime_and_backend(tmp_path):
 def test_runtime_imports_only_package_or_declared_dependencies():
     import ast
     root = Path(__file__).resolve().parents[1] / "src" / "mediaguard"
-    allowed = {"asyncio", "threading", "datetime", "pathlib", "collections", "json", "os", "sqlite3", "time", "fastapi", "uvicorn", "discord", "dataclasses", "urllib", "enum", "aiohttp", "unicodedata"}
+    allowed = {"asyncio", "threading", "datetime", "pathlib", "collections", "json", "os", "sqlite3", "time", "fastapi", "uvicorn", "discord", "dataclasses", "urllib", "enum", "aiohttp", "unicodedata", "re", "uuid"}
     for path in root.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

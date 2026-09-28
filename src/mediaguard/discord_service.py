@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from discord import AllowedMentions, MessageReferenceType
 
 from .activity import Activity
-from .detection_notice import blocked_audio_embed
+from .detection_notice import detection_embed
+from .embed_phrases import match_embeds
 from .attachments import (
     DEFAULT_MAX_ATTACHMENT_BYTES,
     InspectionResult,
@@ -116,12 +117,13 @@ class DiscordService:
             self._reconnects += 1
         self.activity.record("Discord", "gateway_resumed")
 
-    async def inspect_message(self, message, bot_user_id=None) -> tuple[InspectionResult, ...]:
+    async def inspect_message(self, message, bot_user_id=None, embed_rules=()) -> tuple[InspectionResult, ...]:
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
 
         attachments = [(attachment, "direct") for attachment in message.attachments]
         results = []
+        forwarded_embeds = []
         reference = getattr(message, "reference", None)
         if reference is not None and reference.type is MessageReferenceType.forward:
             snapshots = message.message_snapshots
@@ -131,10 +133,7 @@ class DiscordService:
                 )
             for snapshot in snapshots:
                 attachments.extend((attachment, "forward") for attachment in snapshot.attachments)
-                if snapshot.embeds:
-                    results.append(
-                        InspectionResult(Status.UNAVAILABLE, "forward_embeds_not_inspected", "forward")
-                    )
+                forwarded_embeds.extend(snapshot.embeds)
                 if not snapshot.attachments and not snapshot.embeds:
                     results.append(
                         InspectionResult(Status.UNAVAILABLE, "forward_media_metadata_unavailable", "forward")
@@ -145,6 +144,14 @@ class DiscordService:
                 results.append(
                     await inspect_attachment(attachment, self.max_attachment_bytes, self.fetch_prefix, source)
                 )
+
+        if embed_rules:
+            if not any(result.status is Status.MATCH for result in results):
+                embed_match = match_embeds(message.embeds, forwarded_embeds, embed_rules)
+                if embed_match:
+                    results.append(embed_match)
+        elif forwarded_embeds:
+            results.append(InspectionResult(Status.UNAVAILABLE, "forward_embeds_not_inspected", "forward"))
 
         if any(result.status is Status.MATCH for result in results):
             self.activity.record("Discord", "media_match_observed")
@@ -158,7 +165,8 @@ class DiscordService:
         settings = self.database.protection_for(message.guild.id, self.config) if self.config and self.database else None
         if settings and settings["channel_ids"] and message.channel.id not in settings["channel_ids"]:
             return ()
-        results = await self.inspect_message(message, bot_user_id)
+        rules = self.database.embed_rules(message.guild.id, enabled_only=True) if settings and settings["enabled"] and bot_user_id is not None else ()
+        results = await self.inspect_message(message, bot_user_id, rules)
         if not settings or not settings["enabled"]:
             return results
         match = next((result for result in results if result.status is Status.MATCH), None)
@@ -198,7 +206,7 @@ class DiscordService:
                 return results
             self.database.set_outcome(message.id, notification="attempting")
             try:
-                await detection_channel.send(embed=blocked_audio_embed(message, match, deleted_at), allowed_mentions=AllowedMentions.none())
+                await detection_channel.send(embed=detection_embed(message, match, deleted_at), allowed_mentions=AllowedMentions.none())
             except Exception:
                 self.database.set_outcome(message.id, notification="failed_or_unknown")
                 self.activity.record("Error", "detection_notification_failed")

@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "./components/ui/table";
-import { mediaLabel, outcome, sourceLabel, utcTime } from "./format";
+import { detectionLabel, outcome, sourceLabel, utcTime } from "./format";
 import type { Detection } from "./types";
 
 function Result({ detection }: { detection: Detection }) {
@@ -37,7 +37,7 @@ export default function DetectionsPage({
       <div className="page-heading heading-with-count">
         <div>
           <h1>Detections</h1>
-          <p>Recent audio matches and recorded enforcement outcomes.</p>
+          <p>Recent confirmed matches and recorded enforcement outcomes.</p>
         </div>
         <Badge variant="outline">{detections.length} shown</Badge>
       </div>
@@ -47,7 +47,7 @@ export default function DetectionsPage({
             <strong>No detections recorded</strong>
             <p>
               Confirmed matches and their deletion outcomes will appear here.
-              MediaGuard never keeps the audio.
+              MediaGuard keeps metadata only.
             </p>
           </CardContent>
         </Card>
@@ -61,7 +61,7 @@ export default function DetectionsPage({
                     <TableRow>
                       <TableHead>User</TableHead>
                       <TableHead>Channel</TableHead>
-                      <TableHead>Detected type</TableHead>
+                      <TableHead>Detection</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Deleted at</TableHead>
                       <TableHead>Result</TableHead>
@@ -98,7 +98,7 @@ export default function DetectionsPage({
                               : item.channel_id}
                           </span>
                         </TableCell>
-                        <TableCell>{mediaLabel(item.media_type)}</TableCell>
+                        <TableCell>{detectionLabel(item)}</TableCell>
                         <TableCell>{sourceLabel(item.source)}</TableCell>
                         <TableCell className="timestamp-cell">
                           {utcTime(item.deleted_at)}
@@ -132,7 +132,7 @@ export default function DetectionsPage({
                 {detections.map((item) => (
                   <div className="mobile-detection" key={item.message_id}>
                     <div className="mobile-detection-top">
-                      <strong>{mediaLabel(item.media_type)}</strong>
+                      <strong>{detectionLabel(item)}</strong>
                       <Result detection={item} />
                     </div>
                     <p className="mobile-identity">
@@ -223,9 +223,21 @@ export default function DetectionsPage({
                     </div>
                   )}
                   <div>
-                    <dt>Detected as</dt>
-                    <dd>{mediaLabel(selected.media_type)}</dd>
+                    <dt>Detection</dt>
+                    <dd>{detectionLabel(selected)}</dd>
                   </div>
+                  {selected.detection_kind === "embed_phrase" && (
+                    <>
+                      <div>
+                        <dt>Rule</dt>
+                        <dd>{selected.rule_name || "Deleted rule"}</dd>
+                      </div>
+                      <div>
+                        <dt>Rule ID</dt>
+                        <dd>{selected.rule_id}</dd>
+                      </div>
+                    </>
+                  )}
                   <div>
                     <dt>Source</dt>
                     <dd>{sourceLabel(selected.source)}</dd>

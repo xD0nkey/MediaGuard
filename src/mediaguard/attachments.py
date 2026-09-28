@@ -29,6 +29,8 @@ class InspectionResult:
     declared_mime: str | None = None
     size: int | None = None
     media_type: str | None = None
+    rule_id: str | None = None
+    rule_name: str | None = None
 
     @property
     def inspection_complete(self) -> bool:

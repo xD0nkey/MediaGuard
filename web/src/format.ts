@@ -28,7 +28,18 @@ export function mediaLabel(value: string) {
 }
 
 export function sourceLabel(value: Detection["source"]) {
-  return value === "forward" ? "Forwarded message" : "Direct attachment";
+  return {
+    direct: "Direct attachment",
+    forward: "Forwarded message",
+    embed: "Discord embed",
+    forwarded_embed: "Forwarded embed",
+  }[value];
+}
+
+export function detectionLabel(value: Detection) {
+  return value.detection_kind === "embed_phrase"
+    ? "Blocked embed phrase"
+    : `Audio: ${mediaLabel(value.media_type)}`;
 }
 
 export function outcome(detection: Detection) {

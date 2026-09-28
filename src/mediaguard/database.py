@@ -21,6 +21,15 @@ MIGRATIONS = [
         channel_ids TEXT NOT NULL, notifications_enabled INTEGER NOT NULL,
         detection_channel_id TEXT, updated_at TEXT NOT NULL
     )"""),
+    (7, """CREATE TABLE blocked_embed_phrases (
+        rule_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, name TEXT NOT NULL,
+        phrase TEXT NOT NULL, normalized_phrase TEXT NOT NULL, enabled INTEGER NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(guild_id, normalized_phrase)
+    )"""),
+    (8, "ALTER TABLE enforcement_events ADD COLUMN detection_kind TEXT NOT NULL DEFAULT 'audio'"),
+    (9, "ALTER TABLE enforcement_events ADD COLUMN rule_id TEXT"),
+    (10, "ALTER TABLE enforcement_events ADD COLUMN rule_name TEXT"),
 ]
 
 
@@ -85,12 +94,53 @@ class Database:
         with self.connect() as connection:
             return connection.execute("DELETE FROM enforcement_events WHERE at < ?", (cutoff,)).rowcount
 
+    def embed_rules(self, guild_id, *, enabled_only=False):
+        with self.connect() as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT * FROM blocked_embed_phrases WHERE guild_id=? "
+                + ("AND enabled=1 " if enabled_only else "")
+                + "ORDER BY created_at, rule_id", (str(guild_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_embed_rule(self, guild_id, rule_id, name, phrase, normalized_phrase, enabled):
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            if connection.execute("SELECT count(*) FROM blocked_embed_phrases WHERE guild_id=?",
+                                  (str(guild_id),)).fetchone()[0] >= 50:
+                raise ValueError("Rule limit reached")
+            connection.execute(
+                """INSERT INTO blocked_embed_phrases
+                (rule_id, guild_id, name, phrase, normalized_phrase, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (rule_id, str(guild_id), name, phrase, normalized_phrase, int(enabled), now, now),
+            )
+
+    def update_embed_rule(self, guild_id, rule_id, name, phrase, normalized_phrase, enabled):
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE blocked_embed_phrases SET name=?, phrase=?, normalized_phrase=?,
+                enabled=?, updated_at=? WHERE guild_id=? AND rule_id=?""",
+                (name, phrase, normalized_phrase, int(enabled), datetime.now(timezone.utc).isoformat(),
+                 str(guild_id), rule_id),
+            )
+            return cursor.rowcount == 1
+
+    def delete_embed_rule(self, guild_id, rule_id):
+        with self.connect() as connection:
+            return connection.execute(
+                "DELETE FROM blocked_embed_phrases WHERE guild_id=? AND rule_id=?",
+                (str(guild_id), rule_id),
+            ).rowcount == 1
+
     def enforcement_summary(self):
         with self.connect() as connection:
             count, recent = connection.execute(
-                "SELECT count(*), max(at) FROM enforcement_events WHERE deletion='succeeded'"
+                """SELECT sum(CASE WHEN detection_kind='audio' THEN 1 ELSE 0 END), max(at)
+                FROM enforcement_events WHERE deletion='succeeded'"""
             ).fetchone()
-            return {"audio_blocked": count, "recent_detection_at": recent}
+            return {"audio_blocked": count or 0, "recent_detection_at": recent}
 
     def reserve_enforcement(self, message, result, mode):
         author_name = getattr(message.author, "display_name", None)
@@ -100,14 +150,17 @@ class Database:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO enforcement_events
                 (message_id, at, guild_id, channel_id, author_id, media_type, source, original_filename,
-                 mode, deletion, notification, author_name, channel_name, guild_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_attempted', 'not_attempted', ?, ?, ?)""",
+                 mode, deletion, notification, author_name, channel_name, guild_name,
+                 detection_kind, rule_id, rule_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_attempted', 'not_attempted', ?, ?, ?, ?, ?, ?)""",
                 (str(message.id), datetime.now(timezone.utc).isoformat(), str(message.guild.id),
-                 str(message.channel.id), str(message.author.id), result.media_type, result.source,
+                 str(message.channel.id), str(message.author.id), result.media_type or "", result.source,
                  result.filename[:255] if result.filename else None, mode,
                  author_name[:100] if author_name else None,
                  channel_name[:100] if channel_name else None,
-                 guild_name[:100] if guild_name else None),
+                 guild_name[:100] if guild_name else None,
+                 "embed_phrase" if result.rule_id else "audio", result.rule_id,
+                 result.rule_name[:80] if result.rule_name else None),
             )
             return cursor.rowcount == 1
 

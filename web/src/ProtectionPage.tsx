@@ -11,6 +11,7 @@ import {
 } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
 import type { Guild, Protection, ProtectionDraft } from "./types";
+import EmbedRules from "./EmbedRules";
 
 function draftOf(value: Protection): ProtectionDraft {
   return {
@@ -175,7 +176,10 @@ export default function ProtectionPage({
     <div className="content">
       <div className="page-heading">
         <h1>Protection</h1>
-        <p>Choose where MediaGuard deletes confirmed audio files.</p>
+        <p>
+          Choose where MediaGuard removes confirmed audio and blocked embed
+          phrases.
+        </p>
       </div>
       <div className="page-toolbar">
         <div className="guild-picker">
@@ -224,202 +228,210 @@ export default function ProtectionPage({
           </CardContent>
         </Card>
       ) : (
-        <form onSubmit={(event) => void saveChanges(event)}>
-          <div className="form-stack">
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle>Protection</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="setting-row">
-                  <div>
-                    <strong>Status</strong>
-                    <p>Delete messages with confirmed supported audio.</p>
-                  </div>
-                  <Switch
-                    aria-label="Protection enabled"
-                    checked={draft.enabled}
-                    onCheckedChange={(enabled) => update({ enabled })}
-                  />
-                </div>
-                <div className="setting-row channel-setting">
-                  <div>
-                    <strong>Protected channels</strong>
-                    <p>
-                      All relevant channels includes accessible guild text
-                      channels.
-                    </p>
-                  </div>
-                  <div
-                    className="channel-mode"
-                    role="radiogroup"
-                    aria-label="Protected channels"
-                  >
-                    <label>
-                      <input
-                        type="radio"
-                        name="channel-mode"
-                        checked={channelMode === "all"}
-                        onChange={() => {
-                          setChannelMode("all");
-                          update({ channel_ids: [] });
-                        }}
-                      />
-                      All relevant channels
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="channel-mode"
-                        checked={channelMode === "selected"}
-                        onChange={() => {
-                          setChannelMode("selected");
-                          setFeedback(null);
-                        }}
-                      />
-                      Selected channels
-                    </label>
-                  </div>
-                </div>
-                {channelMode === "selected" && (
-                  <div className="channel-options">
-                    {protectedChannels.length ? (
-                      protectedChannels.map((channel) => (
-                        <label key={channel.id}>
-                          <input
-                            type="checkbox"
-                            checked={draft.channel_ids.includes(channel.id)}
-                            onChange={(event) =>
-                              update({
-                                channel_ids: event.target.checked
-                                  ? [...draft.channel_ids, channel.id]
-                                  : draft.channel_ids.filter(
-                                      (id) => id !== channel.id,
-                                    ),
-                              })
-                            }
-                          />
-                          <span>#{channel.name}</span>
-                        </label>
-                      ))
-                    ) : (
+        <>
+          <form onSubmit={(event) => void saveChanges(event)}>
+            <div className="form-stack">
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle>Protection</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="setting-row">
+                    <div>
+                      <strong>Status</strong>
                       <p>
-                        No accessible text channels are available for
-                        protection.
+                        Delete messages with confirmed audio or a blocked embed
+                        phrase.
                       </p>
-                    )}
-                    {missingChannels && (
-                      <p className="field-error">
-                        A saved channel is no longer available. Select
-                        accessible channels before saving.
+                    </div>
+                    <Switch
+                      aria-label="Protection enabled"
+                      checked={draft.enabled}
+                      onCheckedChange={(enabled) => update({ enabled })}
+                    />
+                  </div>
+                  <div className="setting-row channel-setting">
+                    <div>
+                      <strong>Protected channels</strong>
+                      <p>
+                        All relevant channels includes accessible guild text
+                        channels.
                       </p>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle>Detection notifications</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="setting-row">
-                  <div>
-                    <strong>Send a Detection</strong>
-                    <p>
-                      One informational embed after a confirmed deletion. Audio
-                      is never reposted.
-                    </p>
-                  </div>
-                  <Switch
-                    aria-label="Detection notifications enabled"
-                    checked={draft.notifications_enabled}
-                    onCheckedChange={(enabled) =>
-                      update({
-                        notifications_enabled: enabled,
-                        detection_channel_id: enabled
-                          ? draft.detection_channel_id
-                          : null,
-                      })
-                    }
-                  />
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <strong>Detection channel</strong>
-                    <p>Choose a channel where MediaGuard can send messages.</p>
-                  </div>
-                  <Select
-                    value={draft.detection_channel_id ?? "none"}
-                    onValueChange={(value) =>
-                      update({
-                        detection_channel_id: value === "none" ? null : value,
-                      })
-                    }
-                    disabled={!draft.notifications_enabled}
-                  >
-                    <SelectTrigger
-                      aria-label="Detection channel"
-                      className="w-full min-w-0 sm:w-64"
+                    </div>
+                    <div
+                      className="channel-mode"
+                      role="radiogroup"
+                      aria-label="Protected channels"
                     >
-                      <SelectValue placeholder="Select channel" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Select channel</SelectItem>
-                      {detectionChannels.map((channel) => (
-                        <SelectItem key={channel.id} value={channel.id}>
-                          #{channel.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {missingDetectionChannel && (
-                  <p className="field-error">
-                    The saved Detection channel is no longer available.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+                      <label>
+                        <input
+                          type="radio"
+                          name="channel-mode"
+                          checked={channelMode === "all"}
+                          onChange={() => {
+                            setChannelMode("all");
+                            update({ channel_ids: [] });
+                          }}
+                        />
+                        All relevant channels
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="channel-mode"
+                          checked={channelMode === "selected"}
+                          onChange={() => {
+                            setChannelMode("selected");
+                            setFeedback(null);
+                          }}
+                        />
+                        Selected channels
+                      </label>
+                    </div>
+                  </div>
+                  {channelMode === "selected" && (
+                    <div className="channel-options">
+                      {protectedChannels.length ? (
+                        protectedChannels.map((channel) => (
+                          <label key={channel.id}>
+                            <input
+                              type="checkbox"
+                              checked={draft.channel_ids.includes(channel.id)}
+                              onChange={(event) =>
+                                update({
+                                  channel_ids: event.target.checked
+                                    ? [...draft.channel_ids, channel.id]
+                                    : draft.channel_ids.filter(
+                                        (id) => id !== channel.id,
+                                      ),
+                                })
+                              }
+                            />
+                            <span>#{channel.name}</span>
+                          </label>
+                        ))
+                      ) : (
+                        <p>
+                          No accessible text channels are available for
+                          protection.
+                        </p>
+                      )}
+                      {missingChannels && (
+                        <p className="field-error">
+                          A saved channel is no longer available. Select
+                          accessible channels before saving.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle>Detected media</CardTitle>
-              </CardHeader>
-              <CardContent className="media-list">
-                {saved.media_types.map((type) => (
-                  <Badge key={type} variant="outline">
-                    {type}
-                  </Badge>
-                ))}
-                <p>Formats are fixed by MediaGuard’s signature inspector.</p>
-              </CardContent>
-            </Card>
-          </div>
-          <div className="save-bar">
-            <span
-              aria-live="polite"
-              className={
-                feedback?.kind === "error" ? "save-error" : "save-feedback"
-              }
-            >
-              {feedback?.text ||
-                (dirty ? "Unsaved changes" : "All changes saved")}
-            </span>
-            <Button
-              type="submit"
-              disabled={
-                !dirty ||
-                saving ||
-                !!missingChannels ||
-                !!missingDetectionChannel
-              }
-            >
-              {saving ? "Saving…" : "Save changes"}
-            </Button>
-          </div>
-        </form>
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle>Detection notifications</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="setting-row">
+                    <div>
+                      <strong>Send a Detection</strong>
+                      <p>
+                        One informational embed after a confirmed deletion.
+                        Detected content is never reposted.
+                      </p>
+                    </div>
+                    <Switch
+                      aria-label="Detection notifications enabled"
+                      checked={draft.notifications_enabled}
+                      onCheckedChange={(enabled) =>
+                        update({
+                          notifications_enabled: enabled,
+                          detection_channel_id: enabled
+                            ? draft.detection_channel_id
+                            : null,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="setting-row">
+                    <div>
+                      <strong>Detection channel</strong>
+                      <p>
+                        Choose a channel where MediaGuard can send messages.
+                      </p>
+                    </div>
+                    <Select
+                      value={draft.detection_channel_id ?? "none"}
+                      onValueChange={(value) =>
+                        update({
+                          detection_channel_id: value === "none" ? null : value,
+                        })
+                      }
+                      disabled={!draft.notifications_enabled}
+                    >
+                      <SelectTrigger
+                        aria-label="Detection channel"
+                        className="w-full min-w-0 sm:w-64"
+                      >
+                        <SelectValue placeholder="Select channel" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Select channel</SelectItem>
+                        {detectionChannels.map((channel) => (
+                          <SelectItem key={channel.id} value={channel.id}>
+                            #{channel.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {missingDetectionChannel && (
+                    <p className="field-error">
+                      The saved Detection channel is no longer available.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle>Detected media</CardTitle>
+                </CardHeader>
+                <CardContent className="media-list">
+                  {saved.media_types.map((type) => (
+                    <Badge key={type} variant="outline">
+                      {type}
+                    </Badge>
+                  ))}
+                  <p>Formats are fixed by MediaGuard’s signature inspector.</p>
+                </CardContent>
+              </Card>
+            </div>
+            <div className="save-bar">
+              <span
+                aria-live="polite"
+                className={
+                  feedback?.kind === "error" ? "save-error" : "save-feedback"
+                }
+              >
+                {feedback?.text ||
+                  (dirty ? "Unsaved changes" : "All changes saved")}
+              </span>
+              <Button
+                type="submit"
+                disabled={
+                  !dirty ||
+                  saving ||
+                  !!missingChannels ||
+                  !!missingDetectionChannel
+                }
+              >
+                {saving ? "Saving…" : "Save changes"}
+              </Button>
+            </div>
+          </form>
+          <EmbedRules guildId={guildId} protectionEnabled={draft.enabled} />
+        </>
       )}
     </div>
   );

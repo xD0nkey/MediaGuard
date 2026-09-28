@@ -22,6 +22,8 @@ const activityLabels: Record<string, string> = {
   gateway_disconnected: "Bot disconnected",
   gateway_resumed: "Bot reconnected",
   protection_configuration_saved: "Protection configuration saved",
+  embed_rule_saved: "Blocked phrase saved",
+  embed_rule_deleted: "Blocked phrase deleted",
   message_removed: "Detection deleted",
   detection_notification_failed: "Detection notification failed",
   detection_notification_unavailable: "Detection notification unavailable",

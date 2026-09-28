@@ -1,9 +1,12 @@
 from pathlib import Path
+import sqlite3
+import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from urllib.parse import urlsplit
 from fastapi.staticfiles import StaticFiles
 from .runtime import Runtime
+from .embed_phrases import normalize
 
 
 MEDIA_TYPES = ["MP3", "WAV", "FLAC", "Ogg Opus", "Ogg Vorbis", "M4A"]
@@ -24,8 +27,54 @@ def _protection_payload(settings):
             "media_types": MEDIA_TYPES}
 
 
+def _rule_payload(rule):
+    payload = {key: rule[key] for key in ("rule_id", "guild_id", "name", "phrase", "created_at", "updated_at")}
+    payload["enabled"] = bool(rule["enabled"])
+    return payload
+
+
+def _rule_id(value):
+    if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
+        raise HTTPException(422, "Invalid rule ID")
+    return value
+
+
 def create_app(runtime: Runtime, web_dist: Path | None = None):
     app = FastAPI(title="MediaGuard", docs_url=None, redoc_url=None, openapi_url=None)
+
+    def connected_guild(guild_id):
+        guild_id = str(_id(guild_id))
+        try:
+            guild = next((item for item in runtime.discord.inventory() if item["id"] == guild_id), None)
+        except Exception:
+            raise HTTPException(503, "Discord channel list unavailable") from None
+        if guild is None:
+            raise HTTPException(404, "Guild unavailable")
+        return guild
+
+    async def rule_request(request, action):
+        if request.headers.get("x-mediaguard-action") != action:
+            raise HTTPException(403, "Explicit action required")
+        if not request.headers.get("content-type", "").startswith("application/json"):
+            raise HTTPException(415, "JSON required")
+        try:
+            data = await request.json()
+        except ValueError:
+            raise HTTPException(422, "Invalid rule") from None
+        if not isinstance(data, dict) or set(data) != {"guild_id", "name", "phrase", "enabled"}:
+            raise HTTPException(422, "Invalid rule")
+        guild = connected_guild(data["guild_id"])
+        name, phrase, enabled = data["name"], data["phrase"], data["enabled"]
+        if (not isinstance(name, str) or not 1 <= len(name.strip()) <= 80
+                or not isinstance(phrase, str) or not 1 <= len(phrase.strip()) <= 160
+                or type(enabled) is not bool):
+            raise HTTPException(422, "Invalid rule")
+        name, phrase = name.strip(), phrase.strip()
+        normalized = normalize(phrase)
+        if (not normalized or not any(char.isalnum() for char in normalized)
+                or "http://" in normalized or "https://" in normalized):
+            raise HTTPException(422, "Invalid blocked phrase")
+        return guild["id"], name, phrase, normalized, enabled
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -50,14 +99,7 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
     @app.get("/api/protection")
     def protection(guild_id: str | None = None):
         if guild_id is not None:
-            guild_id = str(_id(guild_id))
-            try:
-                guild = next((item for item in runtime.discord.inventory() if item["id"] == guild_id), None)
-            except Exception:
-                raise HTTPException(503, "Discord channel list unavailable") from None
-            if guild is None:
-                raise HTTPException(404, "Guild unavailable")
-            settings = runtime.database.protection_for(_id(guild_id), runtime.config)
+            settings = runtime.database.protection_for(connected_guild(guild_id)["id"], runtime.config)
         else:
             settings = runtime.database.protection_for("0", runtime.config)
         return _protection_payload(settings)
@@ -113,6 +155,47 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
     @app.get("/api/detections")
     def detections():
         return runtime.database.recent_enforcements()
+
+    @app.get("/api/embed-rules")
+    def embed_rules(guild_id: str):
+        guild = connected_guild(guild_id)
+        return [_rule_payload(rule) for rule in runtime.database.embed_rules(guild["id"])]
+
+    @app.post("/api/embed-rules")
+    async def create_embed_rule(request: Request):
+        guild_id, name, phrase, normalized, enabled = await rule_request(request, "save-embed-rule")
+        rule_id = uuid.uuid4().hex
+        try:
+            runtime.database.create_embed_rule(guild_id, rule_id, name, phrase, normalized, enabled)
+        except sqlite3.IntegrityError:
+            raise HTTPException(422, "Blocked phrase already exists in this server") from None
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+        runtime.activity.record("System", "embed_rule_saved")
+        return _rule_payload(next(rule for rule in runtime.database.embed_rules(guild_id) if rule["rule_id"] == rule_id))
+
+    @app.put("/api/embed-rules/{rule_id}")
+    async def update_embed_rule(rule_id: str, request: Request):
+        rule_id = _rule_id(rule_id)
+        guild_id, name, phrase, normalized, enabled = await rule_request(request, "save-embed-rule")
+        try:
+            updated = runtime.database.update_embed_rule(guild_id, rule_id, name, phrase, normalized, enabled)
+        except sqlite3.IntegrityError:
+            raise HTTPException(422, "Blocked phrase already exists in this server") from None
+        if not updated:
+            raise HTTPException(404, "Rule unavailable")
+        runtime.activity.record("System", "embed_rule_saved")
+        return _rule_payload(next(rule for rule in runtime.database.embed_rules(guild_id) if rule["rule_id"] == rule_id))
+
+    @app.delete("/api/embed-rules/{rule_id}")
+    def delete_embed_rule(rule_id: str, guild_id: str, request: Request):
+        if request.headers.get("x-mediaguard-action") != "delete-embed-rule":
+            raise HTTPException(403, "Explicit action required")
+        guild_id = connected_guild(guild_id)["id"]
+        if not runtime.database.delete_embed_rule(guild_id, _rule_id(rule_id)):
+            raise HTTPException(404, "Rule unavailable")
+        runtime.activity.record("System", "embed_rule_deleted")
+        return {"deleted": True}
 
     if web_dist and web_dist.exists():
         app.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="assets")

@@ -44,6 +44,16 @@ export type ProtectionDraft = Pick<
   "enabled" | "channel_ids" | "notifications_enabled" | "detection_channel_id"
 >;
 
+export type EmbedRule = {
+  rule_id: string;
+  guild_id: string;
+  name: string;
+  phrase: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Detection = {
   at: string;
   guild_id: string;
@@ -54,7 +64,10 @@ export type Detection = {
   author_id: string;
   author_name: string | null;
   media_type: string;
-  source: "direct" | "forward";
+  detection_kind: "audio" | "embed_phrase";
+  rule_id: string | null;
+  rule_name: string | null;
+  source: "direct" | "forward" | "embed" | "forwarded_embed";
   original_filename: string | null;
   deletion: string;
   deleted_at: string | null;

@@ -415,6 +415,97 @@ input[type="checkbox"] {
   color: #f6aaaa;
 }
 
+.embed-rules-card {
+  margin-top: 14px;
+}
+.rules-intro,
+.rules-state,
+.rules-feedback {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.rules-state {
+  padding: 18px 0 3px;
+}
+.rules-feedback {
+  padding-top: 12px;
+  color: #b8d8d3;
+}
+.rules-list {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.rule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rule-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.rule-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.rule-copy span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.rule-actions,
+.rule-editor-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
+.rule-actions span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.rule-editor {
+  display: grid;
+  gap: 13px;
+  padding-top: 17px;
+}
+.rule-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.rule-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+.rule-fields input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  font-size: 12px;
+  outline: none;
+}
+.rule-fields input:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px #a5d7ce35;
+}
+.rule-fields input::placeholder {
+  color: var(--muted-foreground);
+}
+
 .history-card {
   overflow: hidden;
 }
@@ -603,6 +694,17 @@ input[type="checkbox"] {
     grid-template-columns: 1fr;
   }
   .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .rule-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .rule-actions {
+    flex-wrap: wrap;
+  }
+  .rule-fields {
     grid-template-columns: 1fr;
   }
   .api-error {
