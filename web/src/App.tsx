@@ -1,70 +1,58 @@
 import { useEffect, useState } from "react";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import DetectionsPage from "./DetectionsPage";
+import { utcTime } from "./format";
+import ProtectionPage from "./ProtectionPage";
+import type { ActivityEvent, Detection, Status } from "./types";
 
 type Section =
-  "Overview" | "Detections" | "Protection" | "Activity" | "Settings";
-type Status = {
-  app: string;
-  uptime_seconds: number;
-  database: string;
-  discord: {
-    state: string;
-    gateway: string;
-    guild_count: number | null;
-    ready_at: string | null;
-    reconnect_count: number;
-  };
-  services: { name: string; state: string }[];
-};
-type Event = { at: string; category: string; code: string };
-type Protection = {
-  enabled: boolean;
-  action: string;
-  channel_ids: string[];
-  notifications_enabled: boolean;
-  detection_channel_id: string | null;
-  media_types: string[];
-};
-type Detection = {
-  at: string;
-  guild_id: string;
-  channel_id: string;
-  message_id: string;
-  author_id: string;
-  media_type: string;
-  source: string;
-  mode: string;
-  deletion: string;
-  notification: string;
-};
+  "Overview" | "Protection" | "Detections" | "Activity" | "Settings";
 const sections: Section[] = [
   "Overview",
-  "Detections",
   "Protection",
+  "Detections",
   "Activity",
   "Settings",
 ];
 
-function useData() {
+const activityLabels: Record<string, string> = {
+  gateway_ready: "Bot connected",
+  gateway_disconnected: "Bot disconnected",
+  gateway_resumed: "Bot reconnected",
+  protection_configuration_saved: "Protection configuration saved",
+  message_removed: "Detection deleted",
+  detection_notification_failed: "Detection notification failed",
+  detection_notification_unavailable: "Detection notification unavailable",
+  delete_failed: "Deletion failed or unconfirmed",
+  delete_permission_missing: "Deletion permission missing",
+  inspection_unavailable: "Inspection unavailable",
+  runtime_started: "MediaGuard started",
+  runtime_stopped: "MediaGuard stopped",
+};
+
+function useRuntimeData() {
   const [status, setStatus] = useState<Status | null>(null);
-  const [events, setEvents] = useState<Event[]>([]);
-  const [protection, setProtection] = useState<Protection | null>(null);
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [error, setError] = useState(false);
+
   useEffect(() => {
     const refresh = async () => {
       try {
-        const [s, a, p, d] = await Promise.all([
+        const responses = await Promise.all([
           fetch("/api/status"),
           fetch("/api/activity"),
-          fetch("/api/protection"),
           fetch("/api/detections"),
         ]);
-        if (!s.ok || !a.ok || !p.ok || !d.ok)
-          throw new Error("API unavailable");
-        setStatus(await s.json());
-        setEvents(await a.json());
-        setProtection(await p.json());
-        setDetections(await d.json());
+        if (responses.some((response) => !response.ok)) throw new Error();
+        const [nextStatus, nextEvents, nextDetections] = await Promise.all(
+          responses.map((response) => response.json()),
+        );
+        setStatus(nextStatus);
+        setEvents(nextEvents);
+        setDetections(nextDetections);
         setError(false);
       } catch {
         setError(true);
@@ -74,37 +62,117 @@ function useData() {
     const timer = window.setInterval(refresh, 10000);
     return () => window.clearInterval(timer);
   }, []);
-  return { status, events, protection, detections, error };
+  return { status, events, detections, error };
 }
 
-function ActivityList({ events }: { events: Event[] }) {
-  return events.length ? (
+function ActivityList({ events }: { events: ActivityEvent[] }) {
+  if (!events.length)
+    return <p className="empty-state">No activity has been recorded yet.</p>;
+  return (
     <ol className="activity-list">
       {events.map((event, index) => (
         <li key={`${event.at}-${index}`}>
-          <span className="event-dot" />
+          <Badge
+            variant={event.category === "Error" ? "destructive" : "outline"}
+          >
+            {event.category}
+          </Badge>
           <span>
-            <strong>{event.category}</strong>
-            <small>{event.code.replaceAll("_", " ")}</small>
+            {activityLabels[event.code] ?? event.code.replaceAll("_", " ")}
           </span>
-          <time>{new Date(event.at).toLocaleTimeString()}</time>
+          <time dateTime={event.at}>
+            {new Date(event.at).toLocaleTimeString()}
+          </time>
         </li>
       ))}
     </ol>
-  ) : (
-    <p className="empty">No activity has been recorded yet.</p>
   );
 }
 
-function duration(seconds: number) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+function Overview({
+  status,
+  events,
+  onActivity,
+}: {
+  status: Status | null;
+  events: ActivityEvent[];
+  onActivity: () => void;
+}) {
+  const connected = status?.discord.state === "ready";
+  return (
+    <div className="content">
+      <div className="page-heading">
+        <h1>Overview</h1>
+        <p>Connection and retained detection history.</p>
+      </div>
+      <div className="overview-grid">
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Bot</CardTitle>
+          </CardHeader>
+          <CardContent className="overview-value">
+            <Badge variant={connected ? "secondary" : "outline"}>
+              {connected ? "Online" : "Offline"}
+            </Badge>
+            <p>
+              {connected
+                ? `${status?.discord.guild_count ?? 0} connected servers`
+                : "Discord connection unavailable"}
+            </p>
+          </CardContent>
+        </Card>
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Audio blocked</CardTitle>
+          </CardHeader>
+          <CardContent className="overview-value">
+            <strong>{status?.detections.audio_blocked ?? "—"}</strong>
+            <p>Confirmed deletions in retained history</p>
+          </CardContent>
+        </Card>
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Recent detection</CardTitle>
+          </CardHeader>
+          <CardContent className="overview-value">
+            <strong className="overview-time">
+              {status?.detections.recent_detection_at
+                ? utcTime(status.detections.recent_detection_at)
+                : "No detections yet"}
+            </strong>
+            <p>Most recent confirmed deletion</p>
+          </CardContent>
+        </Card>
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Storage</CardTitle>
+          </CardHeader>
+          <CardContent className="overview-value">
+            <Badge variant="outline">{status?.database ?? "Unknown"}</Badge>
+            <p>Metadata-only local audit</p>
+          </CardContent>
+        </Card>
+      </div>
+      <Card size="sm" className="overview-activity">
+        <CardHeader className="card-heading-line">
+          <CardTitle>Recent activity</CardTitle>
+          <Button variant="ghost" size="sm" onClick={onActivity}>
+            View all
+          </Button>
+        </CardHeader>
+        <CardContent className="activity-content">
+          <ActivityList events={events.slice(0, 6)} />
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
 
 export default function App() {
   const [section, setSection] = useState<Section>("Overview");
-  const { status, events, protection, detections, error } = useData();
+  const { status, events, detections, error } = useRuntimeData();
+  const connected = status?.discord.state === "ready";
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -119,228 +187,88 @@ export default function App() {
         </div>
         <nav aria-label="Main navigation">
           {sections.map((item) => (
-            <button
+            <Button
               key={item}
-              className={section === item ? "active" : ""}
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={section === item ? "nav-item active" : "nav-item"}
+              aria-current={section === item ? "page" : undefined}
               onClick={() => setSection(item)}
             >
               {item}
-            </button>
+            </Button>
           ))}
         </nav>
-        <div className="sidebar-foot">
-          <span className="live-dot" />
-          Local operator
-        </div>
+        <div className="sidebar-foot">Local operator</div>
       </aside>
       <main>
         <header className="topbar">
           <span>MediaGuard / {section}</span>
-          <span className="top-status">
-            <span
-              className={
-                status?.discord.state === "ready" ? "live-dot" : "idle-dot"
-              }
-            />
-            {status?.discord.state === "ready"
-              ? "Bot connected"
-              : "Bot offline"}
-          </span>
+          <Badge
+            variant={connected ? "secondary" : "outline"}
+            className={connected ? "connection connected" : "connection"}
+          >
+            {connected ? "Bot connected" : "Bot offline"}
+          </Badge>
         </header>
         {error && (
-          <div className="error" role="alert">
+          <div className="api-error" role="alert">
             The operator backend is unavailable. Start MediaGuard and refresh
             this page.
           </div>
         )}
         {section === "Overview" && (
-          <div className="content">
-            <div className="page-heading">
-              <h1>Overview</h1>
-              <p>Runtime health and recent service activity.</p>
-            </div>
-            <div className="overview-grid">
-              <section className="primary-panel">
-                <div className="panel-heading">
-                  <h2>System status</h2>
-                  <span className="subtle">Live runtime</span>
-                </div>
-                <dl className="status-list">
-                  <div>
-                    <dt>MediaGuard</dt>
-                    <dd>{status ? "Running" : "Unavailable"}</dd>
-                  </div>
-                  <div>
-                    <dt>Discord bot</dt>
-                    <dd>{status?.discord.state ?? "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Gateway</dt>
-                    <dd>{status?.discord.gateway ?? "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Connected guilds</dt>
-                    <dd>{status?.discord.guild_count ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Database</dt>
-                    <dd>{status?.database ?? "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Uptime</dt>
-                    <dd>{status ? duration(status.uptime_seconds) : "—"}</dd>
-                  </div>
-                </dl>
-              </section>
-              <section className="activity-panel">
-                <div className="panel-heading">
-                  <h2>Recent activity</h2>
-                  <button
-                    className="text-button"
-                    onClick={() => setSection("Activity")}
-                  >
-                    View all
-                  </button>
-                </div>
-                <ActivityList events={events.slice(0, 6)} />
-              </section>
-            </div>
-            <section className="services">
-              <h2>Services</h2>
-              {status?.services.map((service) => (
-                <div className="service-row" key={service.name}>
-                  <span>{service.name}</span>
-                  <strong>{service.state}</strong>
-                </div>
-              )) ?? <p className="empty">Status unavailable.</p>}
-            </section>
-          </div>
+          <Overview
+            status={status}
+            events={events}
+            onActivity={() => setSection("Activity")}
+          />
         )}
-        {section === "Protection" && (
-          <div className="content">
-            <div className="page-heading">
-              <h1>Protection</h1>
-              <p>Current audio-file protection settings.</p>
-            </div>
-            <section className="full-panel protection-panel">
-              <dl className="status-list">
-                <div>
-                  <dt>Status</dt>
-                  <dd>
-                    {protection
-                      ? protection.enabled
-                        ? "Enabled"
-                        : "Disabled"
-                      : "Unknown"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Protected channels</dt>
-                  <dd>
-                    {protection
-                      ? protection.channel_ids.length
-                        ? protection.channel_ids.join(", ")
-                        : "All guild text channels"
-                      : "Unknown"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Enforcement</dt>
-                  <dd>{protection ? "Delete matching messages" : "Unknown"}</dd>
-                </div>
-                <div>
-                  <dt>Detection notifications</dt>
-                  <dd>
-                    {protection
-                      ? protection.notifications_enabled
-                        ? "Enabled"
-                        : "Disabled"
-                      : "Unknown"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Detection channel</dt>
-                  <dd>
-                    {protection?.detection_channel_id ?? "Not configured"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Detected media types</dt>
-                  <dd>{protection?.media_types.join(", ") ?? "Unknown"}</dd>
-                </div>
-              </dl>
-              <p>
-                Update protection in local config.json and restart MediaGuard to
-                apply changes.
-              </p>
-            </section>
-          </div>
-        )}
-        {section === "Detections" && (
-          <div className="content">
-            <div className="page-heading">
-              <h1>Detections</h1>
-              <p>
-                Recent audio matches and their recorded enforcement outcomes.
-              </p>
-            </div>
-            <section className="full-panel detections-panel">
-              {detections.length ? (
-                <ol className="detection-list">
-                  {detections.map((item) => (
-                    <li key={item.message_id}>
-                      <div>
-                        <strong>{item.media_type.toUpperCase()}</strong>
-                        <span>
-                          {item.source} · {item.mode}
-                        </span>
-                        <time>{new Date(item.at).toLocaleString()}</time>
-                      </div>
-                      <p>
-                        Guild {item.guild_id} · Channel {item.channel_id} ·
-                        Message {item.message_id} · User {item.author_id}
-                      </p>
-                      <small>
-                        Deletion: {item.deletion.replaceAll("_", " ")} ·
-                        Notification: {item.notification.replaceAll("_", " ")}
-                      </small>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="empty">No matching audio has been recorded.</p>
-              )}
-            </section>
-          </div>
-        )}
+        <div hidden={section !== "Protection"}>
+          <ProtectionPage
+            discordState={status?.discord.state ?? "unavailable"}
+          />
+        </div>
+        {section === "Detections" && <DetectionsPage detections={detections} />}
         {section === "Activity" && (
           <div className="content">
             <div className="page-heading">
               <h1>Activity</h1>
-              <p>Service lifecycle events recorded by this runtime.</p>
+              <p>Operational events from this runtime.</p>
             </div>
-            <section className="full-panel">
-              <ActivityList events={events} />
-            </section>
+            <Card size="sm">
+              <CardContent className="activity-content">
+                <ActivityList events={events} />
+              </CardContent>
+            </Card>
           </div>
         )}
         {section === "Settings" && (
           <div className="content">
             <div className="page-heading">
               <h1>Settings</h1>
-              <p>Current local configuration.</p>
+              <p>Local runtime configuration.</p>
             </div>
-            <section className="full-panel settings">
-              <div>
-                <span>Discord connection</span>
-                <strong>{status?.discord.state ?? "Unknown"}</strong>
-              </div>
-              <p>
-                Configure the bot in config.json and set its own token in
-                secrets.env. Settings are edited locally; this dashboard has no
-                write controls yet.
-              </p>
-            </section>
+            <Card size="sm">
+              <CardContent className="settings-content">
+                <dl>
+                  <div>
+                    <dt>Discord connection</dt>
+                    <dd>{status?.discord.state ?? "Unknown"}</dd>
+                  </div>
+                  <div>
+                    <dt>Detection retention</dt>
+                    <dd>{status?.detection_retention_days ?? "—"} days</dd>
+                  </div>
+                </dl>
+                <p>
+                  The bot token belongs in local secrets.env. Protection is
+                  configured per server on the Protection page. MediaGuard does
+                  not retain blocked audio.
+                </p>
+              </CardContent>
+            </Card>
           </div>
         )}
       </main>

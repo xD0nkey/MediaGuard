@@ -78,6 +78,26 @@ class DiscordService:
             return {"state": self._state, "gateway": self._gateway, "guild_count": self._guild_count,
                     "ready_at": self._ready_at, "reconnect_count": self._reconnects}
 
+    async def _inventory(self, client):
+        guilds = []
+        for guild in client.guilds:
+            channels = []
+            for channel in guild.text_channels:
+                permissions = channel.permissions_for(guild.me) if guild.me else None
+                visible = bool(permissions and permissions.view_channel)
+                channels.append({"id": str(channel.id), "name": channel.name,
+                                 "can_protect": visible and bool(permissions.manage_messages),
+                                 "can_notify": visible and bool(permissions.send_messages)})
+            guilds.append({"id": str(guild.id), "name": guild.name, "channels": channels})
+        return guilds
+
+    def inventory(self):
+        with self._lock:
+            loop, client = self._loop, self._client
+        if not loop or not client or not loop.is_running():
+            return []
+        return asyncio.run_coroutine_threadsafe(self._inventory(client), loop).result(timeout=3)
+
     def _ready(self, guild_count):
         with self._lock:
             self._state, self._gateway = "ready", "connected"
@@ -135,10 +155,11 @@ class DiscordService:
     async def handle_message(self, message, bot_user_id=None):
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
-        if self.config and self.config.protected_channel_ids and message.channel.id not in self.config.protected_channel_ids:
+        settings = self.database.protection_for(message.guild.id, self.config) if self.config and self.database else None
+        if settings and settings["channel_ids"] and message.channel.id not in settings["channel_ids"]:
             return ()
         results = await self.inspect_message(message, bot_user_id)
-        if not self.config or not self.config.protection_enabled or not self.database:
+        if not settings or not settings["enabled"]:
             return results
         match = next((result for result in results if result.status is Status.MATCH), None)
         if match is None:
@@ -155,8 +176,8 @@ class DiscordService:
 
         detection_channel = None
         can_notify = False
-        if self.config.notifications_enabled:
-            detection_channel = message.guild.get_channel(self.config.detection_channel_id) if self.config.detection_channel_id else None
+        if settings["notifications_enabled"]:
+            detection_channel = message.guild.get_channel(settings["detection_channel_id"]) if settings["detection_channel_id"] else None
             notify_permissions = detection_channel.permissions_for(member) if detection_channel else None
             can_notify = bool(notify_permissions and notify_permissions.view_channel and notify_permissions.send_messages)
 
@@ -170,7 +191,7 @@ class DiscordService:
         deleted_at = self.database.set_outcome(message.id, deletion="succeeded")
         self.activity.record("Discord", "message_removed")
 
-        if self.config.notifications_enabled:
+        if settings["notifications_enabled"]:
             if not can_notify:
                 self.database.set_outcome(message.id, notification="failed")
                 self.activity.record("Error", "detection_notification_unavailable")

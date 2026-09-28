@@ -15,6 +15,7 @@ class Config:
     protected_channel_ids: tuple[int, ...] = ()
     notifications_enabled: bool = False
     detection_channel_id: int | None = None
+    detection_retention_days: int = 90
 
 
 def load(root: Path | None = None) -> Config:
@@ -44,5 +45,8 @@ def load(root: Path | None = None) -> Config:
         raise ValueError("Invalid protected channel IDs")
     if detection_channel is not None and (type(detection_channel) is not int or detection_channel <= 0):
         raise ValueError("Invalid detection channel ID")
+    retention_days = data.get("detection_retention_days", 90)
+    if type(retention_days) is not int or not 1 <= retention_days <= 3650:
+        raise ValueError("Invalid detection retention period")
     return Config(bool(discord.get("enabled", False)), host, port, max_attachment_bytes,
-                  enabled, tuple(channels), notifications, detection_channel)
+                  enabled, tuple(channels), notifications, detection_channel, retention_days)

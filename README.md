@@ -17,7 +17,9 @@ mediaguard
 
 Open `http://127.0.0.1:8765`. Copy `config.example.json` to ignored `config.json` and `secrets.example.env` to ignored `secrets.env`. Set a dedicated MediaGuard token in `secrets.env` or `DISCORD_BOT_TOKEN`. Set `discord.enabled` and `protection.enabled` to `true` to connect and enforce. Both default to `false`.
 
-`protection.channel_ids` is an array of Discord channel IDs. An empty array protects all guild text channels the bot can receive; a nonempty array protects only those exact IDs. `protection.notifications_enabled` enables one informational Detection embed after a successful deletion. Set `protection.detection_channel_id` to its destination. If notification delivery fails or the channel is unconfigured, deletion still occurs and the audit records the failure. Changes to `config.json` take effect after restart. The dashboard is read-only.
+The Protection page lets an operator select a connected guild, enable protection, choose eligible text channels, and configure Detection notifications. Changes take effect when **Save changes** succeeds and persist across restarts. An empty channel selection protects every eligible channel in that guild. The bot must have View Channel and Manage Messages to protect a channel; the Detection destination also needs View Channel and Send Messages. The page uses the existing Discord gateway cache for its guild and channel list.
+
+The ignored `config.json` provides startup defaults until a guild is saved in the dashboard. Its `protection.channel_ids` and `protection.detection_channel_id` values are Discord IDs; changes to this file take effect after restart. `detection_retention_days` defaults to 90 (allowed range 1–3650). Older enforcement rows are pruned at startup; saved guild settings are retained. The Detections page shows up to 50 recent metadata-only records. Notification delivery failures do not undo successful deletion.
 
 ## Discord permissions
 
@@ -33,4 +35,4 @@ MediaGuard never preserves, reposts, mirrors, archives, or links to prohibited a
 
 Run `py -3 -m pytest -q`, `cd web && npm run format:check`, and `npm run build`. Tests use synthetic attachments and mocked Discord boundaries; no real token or Discord connection is needed. See [architecture](docs/architecture.md), [development](docs/development.md), [security](SECURITY.md), and [contributing](CONTRIBUTING.md).
 
-The repository remains private. No license has been selected. Public visibility alone would not grant permission to reuse, modify, or redistribute the code.
+The repository remains private. No license has been selected for MediaGuard. The dashboard includes local shadcn/ui component source under its MIT license; see [third-party notices](web/THIRD_PARTY_NOTICES.md). Public visibility alone would not grant permission to reuse, modify, or redistribute MediaGuard code.

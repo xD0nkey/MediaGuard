@@ -29,7 +29,7 @@ def test_migration_idempotent(tmp_path):
     db.migrate()
     db.migrate()
     with db.connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 def test_attachment_size_configuration(tmp_path):
