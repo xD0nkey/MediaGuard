@@ -20,6 +20,10 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_protected_channel(channel, protected_ids):
+    return channel.id in protected_ids or getattr(channel, "parent_id", None) in protected_ids
+
+
 def make_client(service):
     import discord
     intents = discord.Intents.none()
@@ -106,12 +110,14 @@ class DiscordService:
         guilds = []
         for guild in client.guilds:
             channels = []
-            for channel in guild.text_channels:
+            forum_ids = {forum.id for forum in guild.forums}
+            for channel in [*guild.text_channels, *guild.forums]:
                 permissions = channel.permissions_for(guild.me) if guild.me else None
                 visible = bool(permissions and permissions.view_channel)
                 channels.append({"id": str(channel.id), "name": channel.name,
                                  "can_protect": visible and bool(permissions.manage_messages),
-                                 "can_notify": visible and bool(permissions.send_messages)})
+                                 "can_notify": visible and bool(permissions.send_messages)
+                                 and channel.id not in forum_ids})
             guilds.append({"id": str(guild.id), "name": guild.name, "channels": channels})
         return guilds
 
@@ -187,7 +193,7 @@ class DiscordService:
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
         settings = self.database.protection_for(message.guild.id, self.config) if self.config and self.database else None
-        if settings and settings["channel_ids"] and message.channel.id not in settings["channel_ids"]:
+        if settings and settings["channel_ids"] and not _is_protected_channel(message.channel, settings["channel_ids"]):
             return ()
         rules = self.database.embed_rules(message.guild.id, enabled_only=True) if settings and settings["enabled"] and bot_user_id is not None else ()
         results = await self.inspect_message(message, bot_user_id, rules, embed_only)

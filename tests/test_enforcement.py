@@ -297,6 +297,43 @@ def test_filter_disabled_own_dm_and_privacy(tmp_path):
     assert message.deletes == 0
 
 
+def thread(thread_id, parent_id):
+    channel = Channel(thread_id)
+    channel.parent_id = parent_id
+    return channel
+
+
+def test_thread_under_protected_channel_is_handled(tmp_path):
+    runtime = setup(tmp_path, channels=(21,))
+    message = Message(attachment("song.mp3", MP3), channel=thread(50, 21))
+    assert handle(runtime, message)[0].status is Status.MATCH
+    assert message.deletes == 1
+
+
+def test_thread_under_unprotected_channel_is_ignored(tmp_path):
+    runtime = setup(tmp_path, channels=(21,))
+    message = Message(attachment("song.mp3", MP3), channel=thread(50, 22))
+    assert handle(runtime, message) == ()
+    assert message.deletes == 0
+
+
+def test_forum_post_under_protected_forum_is_handled(tmp_path):
+    runtime = setup(tmp_path, channels=(60,))
+    message = Message(attachment("song.mp3", MP3), channel=thread(61, 60))
+    assert handle(runtime, message)[0].status is Status.MATCH
+    assert message.deletes == 1
+
+
+def test_thread_delete_permission_uses_thread(tmp_path):
+    runtime = setup(tmp_path, channels=(21,))
+    denied = thread(50, 21)
+    denied.permissions.manage_messages = False
+    message = Message(attachment("song.mp3", MP3), channel=denied)
+    handle(runtime, message)
+    assert message.deletes == 0
+    assert "delete_permission_missing" in str(runtime.activity.recent())
+
+
 def test_config_and_read_only_api(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"protection": {"enabled": True, "channel_ids": [20], "notifications_enabled": True, "detection_channel_id": 40}}), encoding="utf-8")

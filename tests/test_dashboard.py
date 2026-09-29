@@ -51,12 +51,15 @@ def test_inventory_uses_existing_guild_and_channel_permissions(tmp_path):
         SimpleNamespace(id=12, name="hidden", permissions_for=lambda _: SimpleNamespace(
             view_channel=False, manage_messages=True, send_messages=True)),
     ]
-    guild = SimpleNamespace(id=1, name="One", me=object(), text_channels=channels)
+    forum = SimpleNamespace(id=14, name="clips", permissions_for=lambda _: SimpleNamespace(
+        view_channel=True, manage_messages=True, send_messages=True))
+    guild = SimpleNamespace(id=1, name="One", me=object(), text_channels=channels, forums=[forum])
     result = asyncio.run(app.discord._inventory(SimpleNamespace(guilds=[guild])))
     assert result[0]["channels"][0]["can_protect"]
     assert result[0]["channels"][0]["can_notify"]
     assert not result[0]["channels"][1]["can_protect"]
     assert not result[0]["channels"][1]["can_notify"]
+    assert result[0]["channels"][2] == {"id": "14", "name": "clips", "can_protect": True, "can_notify": False}
 
 
 def test_protection_save_reload_and_guild_scope(tmp_path):
