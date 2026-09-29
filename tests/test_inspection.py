@@ -39,14 +39,19 @@ def message(*attachments, guild=True, author_id=10, forward=False, snapshots=(),
     )
 
 
-def service():
+def id3_tag(size):
+    syncsafe = bytes((size >> shift) & 0x7F for shift in (21, 14, 7, 0))
+    return b"ID3\x03\x00\x00" + syncsafe + b"\x00" * size
+
+
+def service(fail_offset_fetch=False):
     fetched = []
 
-    async def fetch(item):
+    async def fetch(item, start=0):
         fetched.append(item.url)
-        if item.content is None:
+        if item.content is None or (start and fail_offset_fetch):
             raise OSError("synthetic download failure")
-        return item.content[:PREFIX_BYTES]
+        return item.content[start:start + PREFIX_BYTES]
 
     activity = Activity()
     return DiscordService(activity, fetch_prefix=fetch), fetched
@@ -93,6 +98,47 @@ def test_id3_mp3_and_renamed_audio():
     assert result.status is Status.MATCH
     assert result.extension == ".txt"
     assert result.declared_mime == "text/plain"
+
+
+def test_small_id3_tag_mp3_needs_one_fetch():
+    bot, fetched = service()
+    result, = inspect(bot, message(attachment("song.mp3", id3_tag(100) + MP3, "audio/mpeg")))
+    assert result.status is Status.MATCH
+    assert result.media_type == "mp3"
+    assert len(fetched) == 1
+
+
+def test_large_id3_tag_mp3_is_detected_with_second_fetch():
+    bot, fetched = service()
+    result, = inspect(bot, message(attachment("song.mp3", id3_tag(50 * 1024) + MP3, "audio/mpeg")))
+    assert result.status is Status.MATCH
+    assert result.reason == "audio_signature"
+    assert result.media_type == "mp3"
+    assert len(fetched) == 2
+
+
+def test_flac_with_prepended_id3_tag_is_detected():
+    bot, _ = service()
+    small, large = inspect(bot, message(attachment("a.flac", id3_tag(20) + FLAC),
+                                        attachment("b.flac", id3_tag(50 * 1024) + FLAC)))
+    assert (small.status, small.media_type) == (Status.MATCH, "flac")
+    assert (large.status, large.media_type) == (Status.MATCH, "flac")
+
+
+def test_failed_second_fetch_falls_back_to_id3_match():
+    bot, fetched = service(fail_offset_fetch=True)
+    result, = inspect(bot, message(attachment("song.bin", id3_tag(50 * 1024) + MP3)))
+    assert result.status is Status.MATCH
+    assert result.reason == "id3_tag"
+    assert result.media_type == "mp3"
+    assert len(fetched) == 2
+
+
+def test_large_id3_tag_without_audio_stays_unresolved():
+    bot, _ = service()
+    result, = inspect(bot, message(attachment("song.mp3", id3_tag(50 * 1024) + b"\x00" * 5000)))
+    assert result.status is Status.UNAVAILABLE
+    assert result.reason == "media_evidence_unresolved"
 
 
 def test_ordinary_attachment_is_safe_and_misleading_audio_is_unavailable():
@@ -274,6 +320,8 @@ def test_download_prefix_reads_only_bounded_bytes(monkeypatch):
             return Response()
 
     monkeypatch.setattr("mediaguard.attachments.aiohttp.ClientSession", Session)
+    with pytest.raises(ValueError):
+        asyncio.run(download_prefix(attachment(), -1))
     prefix = asyncio.run(download_prefix(attachment()))
     assert len(prefix) == PREFIX_BYTES
     assert calls["read_counts"][0] == PREFIX_BYTES
@@ -281,3 +329,46 @@ def test_download_prefix_reads_only_bounded_bytes(monkeypatch):
     assert calls["headers"] == {"Range": f"bytes=0-{PREFIX_BYTES - 1}"}
     assert calls["allow_redirects"] is False
     assert calls["timeout"] == 8
+
+
+def test_download_prefix_offset_requires_partial_content(monkeypatch):
+    calls = {}
+
+    class Content:
+        async def read(self, count):
+            return b""
+
+    class Response:
+        content = Content()
+
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+    class Session:
+        status = 200
+
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        def get(self, url, **kwargs):
+            calls.update(kwargs)
+            return Response(Session.status)
+
+    monkeypatch.setattr("mediaguard.attachments.aiohttp.ClientSession", Session)
+    with pytest.raises(OSError):
+        asyncio.run(download_prefix(attachment(), 51210))
+    assert calls["headers"] == {"Range": f"bytes=51210-{51210 + PREFIX_BYTES - 1}"}
+    Session.status = 206
+    assert asyncio.run(download_prefix(attachment(), 51210)) == b""

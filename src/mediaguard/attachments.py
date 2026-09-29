@@ -59,10 +59,10 @@ def _mp3_frame_length(data: bytes, offset: int) -> int | None:
     return factor * bitrates[bitrate_index] // rates[sample_index] + ((header >> 9) & 1)
 
 
-def _mp3_offset(data: bytes) -> int | None:
-    if not data.startswith(b"ID3"):
-        return 0
-    if len(data) < 10 or data[3] not in (2, 3, 4) or any(byte >= 128 for byte in data[6:10]):
+def id3_tag_end(data: bytes) -> int | None:
+    if len(data) < 10 or not data.startswith(b"ID3") or data[3] not in (2, 3, 4):
+        return None
+    if any(byte >= 128 for byte in data[6:10]):
         return None
     size = 0
     for byte in data[6:10]:
@@ -70,15 +70,32 @@ def _mp3_offset(data: bytes) -> int | None:
     return 10 + size
 
 
-def detect_audio(data: bytes) -> str | None:
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
-        return "wav"
-    if (
+def _is_flac(data: bytes) -> bool:
+    return (
         len(data) >= 8
         and data[:4] == b"fLaC"
         and data[4] & 0x7F == 0
         and int.from_bytes(data[5:8], "big") == 34
-    ):
+    )
+
+
+def _is_mp3_at(data: bytes, offset: int) -> bool:
+    first = _mp3_frame_length(data, offset)
+    return bool(first and _mp3_frame_length(data, offset + first))
+
+
+def detect_audio_after_id3(data: bytes) -> str | None:
+    if _is_flac(data):
+        return "flac"
+    if _is_mp3_at(data, 0):
+        return "mp3"
+    return None
+
+
+def detect_audio(data: bytes) -> str | None:
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if _is_flac(data):
         return "flac"
     if len(data) >= 28 and data[:4] == b"OggS" and data[4] == 0 and data[5] & 0x02:
         payload = 27 + data[26]
@@ -92,15 +109,15 @@ def detect_audio(data: bytes) -> str | None:
             brands = [data[8:12]] + [data[index:index + 4] for index in range(16, box_size, 4)]
             if b"M4A " in brands:
                 return "m4a"
-    offset = _mp3_offset(data)
-    if offset is not None:
-        first = _mp3_frame_length(data, offset)
-        if first and _mp3_frame_length(data, offset + first):
-            return "mp3"
-    return None
+    if data.startswith(b"ID3"):
+        tag_end = id3_tag_end(data)
+        return detect_audio_after_id3(data[tag_end:]) if tag_end is not None else None
+    return "mp3" if _is_mp3_at(data, 0) else None
 
 
-async def download_prefix(attachment) -> bytes:
+async def download_prefix(attachment, start: int = 0) -> bytes:
+    if type(start) is not int or start < 0:
+        raise ValueError("Invalid range start")
     url = urlsplit(attachment.url)
     if (
         url.scheme != "https"
@@ -115,10 +132,10 @@ async def download_prefix(attachment) -> bytes:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(
             attachment.url,
-            headers={"Range": f"bytes=0-{PREFIX_BYTES - 1}"},
+            headers={"Range": f"bytes={start}-{start + PREFIX_BYTES - 1}"},
             allow_redirects=False,
         ) as response:
-            if response.status not in (200, 206):
+            if response.status not in ((200, 206) if start == 0 else (206,)):
                 raise OSError("Attachment fetch failed")
             prefix = bytearray()
             while len(prefix) < PREFIX_BYTES:
@@ -158,6 +175,25 @@ async def inspect_attachment(
     media_type = detect_audio(prefix)
     if media_type:
         return InspectionResult(Status.MATCH, "audio_signature", media_type=media_type, **evidence)
+    tag_end = id3_tag_end(prefix)
+    if tag_end is not None and len(prefix) < tag_end + PREFIX_BYTES and tag_end < size:
+        return await _inspect_after_id3(attachment, tag_end, fetch_prefix, evidence) or _unresolved_or_safe(
+            prefix, extension, mime, evidence)
+    return _unresolved_or_safe(prefix, extension, mime, evidence)
+
+
+async def _inspect_after_id3(attachment, tag_end, fetch_prefix, evidence) -> InspectionResult | None:
+    try:
+        after_tag = await fetch_prefix(attachment, tag_end)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+        return InspectionResult(Status.MATCH, "id3_tag", media_type="mp3", **evidence)
+    media_type = detect_audio_after_id3(after_tag)
+    if media_type:
+        return InspectionResult(Status.MATCH, "audio_signature", media_type=media_type, **evidence)
+    return None
+
+
+def _unresolved_or_safe(prefix, extension, mime, evidence) -> InspectionResult:
     media_hint = (
         extension in AUDIO_EXTENSIONS
         or extension in VIDEO_EXTENSIONS
