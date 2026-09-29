@@ -29,6 +29,8 @@ export type Guild = {
   }[];
 };
 
+export type UnresolvedAction = "allow" | "report";
+
 export type Protection = {
   enabled: boolean;
   action: "DELETE";
@@ -36,6 +38,7 @@ export type Protection = {
   notifications_enabled: boolean;
   detection_channel_id: string | null;
   exempt_role_ids: string[];
+  unresolved_action: UnresolvedAction;
   media_types: string[];
 };
 
@@ -46,6 +49,7 @@ export type ProtectionDraft = Pick<
   | "notifications_enabled"
   | "detection_channel_id"
   | "exempt_role_ids"
+  | "unresolved_action"
 >;
 
 export type EmbedRule = {

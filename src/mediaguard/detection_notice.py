@@ -5,6 +5,16 @@ import discord
 
 
 BLOCKED_COLOR = 0xD94A4A
+UNRESOLVED_COLOR = 0xD9A441
+UNRESOLVED_REASONS = {
+    "size_unavailable": "The attachment size was not available.",
+    "download_failed": "The attachment could not be downloaded or the download timed out.",
+    "incomplete_download": "Only part of the attachment could be downloaded.",
+    "media_evidence_unresolved": "The attachment looks like audio or video, but its format could not be confirmed.",
+    "forward_snapshot_unavailable": "The forwarded message content was not available.",
+    "forward_media_metadata_unavailable": "The forwarded message had no inspectable attachments or embeds.",
+    "forward_embeds_not_inspected": "Forwarded embeds could not be checked because no embed phrases are configured.",
+}
 
 
 def _label(value, limit):
@@ -48,6 +58,24 @@ def detection_embed(message, result, deleted_at: datetime):
         embed.add_field(name="Source", value="Forwarded message" if result.source == "forward" else "Direct attachment", inline=True)
     embed.add_field(name="Action", value="Message deleted", inline=False)
     embed.add_field(name="Deleted at", value=f"<t:{int(deleted_at.timestamp())}:F>", inline=False)
+    embed.set_footer(text="MediaGuard")
+    return embed
+
+
+def unresolved_embed(message, result, checked_at: datetime):
+    embed = discord.Embed(
+        title="Inspection inconclusive",
+        description="MediaGuard could not conclusively determine the media in this message. "
+                    "The message was NOT deleted.",
+        color=UNRESOLVED_COLOR,
+        timestamp=checked_at,
+    )
+    embed.add_field(name="User", value=f"<@{message.author.id}>", inline=False)
+    embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=False)
+    embed.add_field(name="Reason", value=UNRESOLVED_REASONS.get(result.reason, "Inspection was incomplete."),
+                    inline=False)
+    embed.add_field(name="Action", value="Message not deleted", inline=False)
+    embed.add_field(name="Message", value=f"[Jump to message]({message.jump_url})", inline=False)
     embed.set_footer(text="MediaGuard")
     return embed
 

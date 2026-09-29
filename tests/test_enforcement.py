@@ -46,6 +46,7 @@ class Message:
         self.content = content
         self.fail_delete = fail_delete
         self.deletes = 0
+        self.jump_url = f"https://discord.com/channels/1/{self.channel.id}/{message_id}"
 
     async def delete(self):
         self.deletes += 1
@@ -414,3 +415,148 @@ def test_inspection_never_writes_media_files(tmp_path):
         handle(app, Message(attachment("song.mp3", MP3)))
     assert_no_history(app)
     assert all(path.name.startswith("mediaguard.sqlite3") for path in (root / "runtime").iterdir())
+
+
+def report_setup(tmp_path, *, notifications=True, action="report"):
+    runtime = setup(tmp_path)
+    runtime.database.save_protection(1, True, [], notifications, 40, (), action)
+    return runtime
+
+
+def assert_unresolved_notice(sent, message_id, reason_text):
+    assert len(sent) == 1
+    embed = sent[0]["embed"]
+    rendered = str(embed.to_dict()).lower()
+    for word in ("blocked", "detected", "matched", "removed"):
+        assert word not in rendered
+    assert "not deleted" in rendered
+    assert "could not conclusively determine" in rendered
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["Action"] == "Message not deleted"
+    assert reason_text in fields["Reason"]
+    assert fields["Message"] == f"[Jump to message](https://discord.com/channels/1/20/{message_id})"
+    assert sent[0]["allowed_mentions"].users is False
+
+
+@pytest.mark.parametrize(("item", "reason_text"), [
+    (attachment("song.mp3", None, size=100), "could not be downloaded or the download timed out"),
+    (attachment("song.mp3", b"not an mp3", "audio/mpeg"), "format could not be confirmed"),
+    (attachment("clip.mp4", b"\x00\x00\x00\x10ftypisom\x00\x00\x00\x00", "video/mp4"), "format could not be confirmed"),
+    (attachment("song.mp3", b"", size=100), "Only part of the attachment"),
+])
+def test_report_mode_posts_unresolved_notice_without_deleting(tmp_path, item, reason_text):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    message = Message(item, detection_channel=channel)
+    assert handle(runtime, message)[0].status is Status.UNAVAILABLE
+    assert message.deletes == 0
+    assert_unresolved_notice(channel.sent, 30, reason_text)
+    assert_no_history(runtime)
+
+
+def test_allow_mode_and_disabled_notifications_do_not_report(tmp_path):
+    channel = Channel(40)
+    allowed = report_setup(tmp_path / "allow", action="allow")
+    silent = report_setup(tmp_path / "silent", notifications=False)
+    for runtime in (allowed, silent):
+        message = Message(attachment("song.mp3", None, size=100), detection_channel=channel)
+        handle(runtime, message)
+        assert message.deletes == 0
+    assert channel.sent == []
+
+
+def test_report_mode_does_not_report_safe_messages(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    handle(runtime, Message(attachment(), detection_channel=channel))
+    assert channel.sent == []
+
+
+def test_unresolved_then_repeated_unresolved_reports_once(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    message = Message(attachment("song.mp3", None, size=100), detection_channel=channel)
+    handle(runtime, message)
+    handle(runtime, message)
+    asyncio.run(runtime.discord.handle_message(message, 99, embed_only=True))
+    assert message.deletes == 0
+    assert len(channel.sent) == 1
+
+
+def test_unresolved_then_later_match_still_deletes_and_notifies(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    item = attachment("song.mp3", None, size=len(MP3))
+    message = Message(item, detection_channel=channel)
+    handle(runtime, message)
+    assert message.deletes == 0
+    assert channel.sent[0]["embed"].title == "Inspection inconclusive"
+    item.content = MP3
+    assert handle(runtime, message)[0].status is Status.MATCH
+    assert message.deletes == 1
+    assert len(channel.sent) == 2
+    confirmed = channel.sent[1]["embed"]
+    assert confirmed.title == "Audio file blocked"
+    assert confirmed.fields[5].value == "Message deleted"
+
+
+def test_mixed_unavailable_and_match_deletes_without_unresolved_notice(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    message = Message(attachment("bad.mp3", None, size=100), attachment("song.mp3", MP3),
+                      detection_channel=channel)
+    assert [item.status for item in handle(runtime, message)] == [Status.UNAVAILABLE, Status.MATCH]
+    assert message.deletes == 1
+    assert len(channel.sent) == 1
+    assert channel.sent[0]["embed"].title == "Audio file blocked"
+
+
+def test_unresolved_notice_unavailable_or_failed_records_code(tmp_path):
+    runtime = report_setup(tmp_path)
+    handle(runtime, Message(attachment("song.mp3", None, size=100), detection_channel=Channel(40, send=False)))
+    assert "unresolved_notification_unavailable" in str(runtime.activity.recent())
+    failing = Channel(40, fail_send=True)
+    handle(runtime, Message(attachment("song.mp3", None, size=100), detection_channel=failing, message_id=31))
+    assert "unresolved_notification_failed" in str(runtime.activity.recent())
+    assert "private" not in str(runtime.activity.recent())
+
+
+def test_exempt_forward_without_snapshot_does_not_report_skipped_audio(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    runtime.database.save_protection(1, True, [], True, 40, (70,), "report")
+    fetched = []
+
+    async def fetch(item):
+        fetched.append(item)
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    message = with_roles(Message(attachment("song.mp3", MP3), forward=True, detection_channel=channel), 70)
+    message.message_snapshots = []
+    assert handle(runtime, message) == ()
+    assert fetched == []
+    assert message.deletes == 0
+    assert channel.sent == []
+
+
+def test_exempt_forward_without_snapshot_reports_unchecked_phrase(tmp_path):
+    channel = Channel(40)
+    runtime = report_setup(tmp_path)
+    runtime.database.save_protection(1, True, [], True, 40, (70,), "report")
+    runtime.database.create_embed_rule(1, "rule", "Blocked", "blocked phrase", "blocked phrase", True)
+    fetched = []
+
+    async def fetch(item):
+        fetched.append(item)
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    message = with_roles(Message(attachment("song.mp3", MP3), forward=True, detection_channel=channel), 70)
+    message.message_snapshots = []
+    message.embeds = []
+    result, = handle(runtime, message)
+    assert (result.status, result.reason) == (Status.UNAVAILABLE, "forward_snapshot_unavailable")
+    assert fetched == []
+    assert message.deletes == 0
+    assert_unresolved_notice(channel.sent, message.id, "forwarded message content was not available")

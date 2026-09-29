@@ -5,10 +5,9 @@ from datetime import datetime, timezone
 from discord import AllowedMentions, MessageReferenceType
 
 from .activity import Activity
-from .detection_notice import detection_embed
+from .detection_notice import detection_embed, unresolved_embed
 from .embed_phrases import match_embeds
 from .attachments import (
-    DEFAULT_MAX_ATTACHMENT_BYTES,
     InspectionResult,
     Status,
     download_prefix,
@@ -69,14 +68,12 @@ class DiscordService:
         activity: Activity,
         client_factory=make_client,
         *,
-        max_attachment_bytes=DEFAULT_MAX_ATTACHMENT_BYTES,
         fetch_prefix=download_prefix,
         config=None,
         database=None,
     ):
         self.activity = activity
         self.client_factory = client_factory
-        self.max_attachment_bytes = max_attachment_bytes
         self.fetch_prefix = fetch_prefix
         self.config = config
         self.database = database
@@ -166,7 +163,7 @@ class DiscordService:
         reference = getattr(message, "reference", None)
         if reference is not None and reference.type is MessageReferenceType.forward:
             snapshots = message.message_snapshots
-            if not snapshots:
+            if not snapshots and (not skip_attachments or embed_rules):
                 results.append(
                     InspectionResult(Status.UNAVAILABLE, "forward_snapshot_unavailable", "forward")
                 )
@@ -182,7 +179,7 @@ class DiscordService:
         for attachment, source in attachments:
             async with self._inspection_slots:
                 results.append(
-                    await inspect_attachment(attachment, self.max_attachment_bytes, self.fetch_prefix, source)
+                    await inspect_attachment(attachment, self.fetch_prefix, source)
                 )
 
         if embed_rules:
@@ -210,6 +207,7 @@ class DiscordService:
             return results
         match = next((result for result in results if result.status is Status.MATCH), None)
         if match is None:
+            await self._report_unresolved(message, results, settings)
             return results
 
         if not self._reserve_attempt(message.id):
@@ -221,12 +219,8 @@ class DiscordService:
             self.activity.record("Error", "delete_permission_missing")
             return results
 
-        detection_channel = None
-        can_notify = False
-        if settings["notifications_enabled"]:
-            detection_channel = message.guild.get_channel(settings["detection_channel_id"]) if settings["detection_channel_id"] else None
-            notify_permissions = detection_channel.permissions_for(member) if detection_channel else None
-            can_notify = bool(notify_permissions and notify_permissions.view_channel and notify_permissions.send_messages)
+        detection_channel = self._detection_channel(message, settings) if settings["notifications_enabled"] else None
+        can_notify = detection_channel is not None
 
         try:
             await message.delete()
@@ -244,6 +238,30 @@ class DiscordService:
             except Exception:
                 self.activity.record("Error", "detection_notification_failed")
         return results
+
+    def _detection_channel(self, message, settings):
+        member = message.guild.me
+        channel = message.guild.get_channel(settings["detection_channel_id"]) if settings["detection_channel_id"] else None
+        permissions = channel.permissions_for(member) if channel and member else None
+        if permissions and permissions.view_channel and permissions.send_messages:
+            return channel
+        return None
+
+    async def _report_unresolved(self, message, results, settings):
+        unresolved = next((result for result in results if result.status is Status.UNAVAILABLE), None)
+        if unresolved is None or settings["unresolved_action"] != "report" or not settings["notifications_enabled"]:
+            return
+        if not self._reserve_attempt(("unresolved", message.id)):
+            return
+        detection_channel = self._detection_channel(message, settings)
+        if detection_channel is None:
+            self.activity.record("Error", "unresolved_notification_unavailable")
+            return
+        try:
+            await detection_channel.send(embed=unresolved_embed(message, unresolved, datetime.now(timezone.utc)),
+                                         allowed_mentions=AllowedMentions.none())
+        except Exception:
+            self.activity.record("Error", "unresolved_notification_failed")
 
     def start(self, token: str | None):
         if not token:

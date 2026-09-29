@@ -33,7 +33,8 @@ def runtime(tmp_path, config=None):
 
 def payload(**changes):
     data = {"guild_id": "1", "enabled": True, "channel_ids": [],
-            "notifications_enabled": False, "detection_channel_id": None, "exempt_role_ids": []}
+            "notifications_enabled": False, "detection_channel_id": None, "exempt_role_ids": [],
+            "unresolved_action": "allow"}
     data.update(changes)
     return data
 
@@ -217,3 +218,30 @@ def test_exempt_roles_are_saved_and_validated(tmp_path):
         assert client.get("/api/protection", params={"guild_id": "1"}).json()["exempt_role_ids"] == []
         assert save(client, payload(exempt_role_ids=["70", "71"])).json()["exempt_role_ids"] == ["70", "71"]
     assert runtime(tmp_path).database.protection_for(1, Config())["exempt_role_ids"] == (70, 71)
+
+
+def test_unresolved_action_is_saved_and_validated(tmp_path):
+    app = runtime(tmp_path)
+    with TestClient(create_app(app)) as client:
+        assert client.get("/api/protection", params={"guild_id": "1"}).json()["unresolved_action"] == "allow"
+        for action in ("delete", "REPORT", "", None, True, ["report"]):
+            assert save(client, payload(unresolved_action=action)).status_code == 422
+        missing = payload()
+        del missing["unresolved_action"]
+        assert save(client, missing).status_code == 422
+        assert save(client, payload(unresolved_action="report")).json()["unresolved_action"] == "report"
+    assert runtime(tmp_path).database.protection_for(1, Config())["unresolved_action"] == "report"
+
+
+def test_unresolved_action_migration_defaults_existing_rows_to_allow(tmp_path):
+    path = tmp_path / "runtime" / "mediaguard.sqlite3"
+    database = Database(path)
+    with database.connect() as connection:
+        connection.execute(MIGRATIONS[0][1])
+        for version, sql in MIGRATIONS[1:-1]:
+            connection.execute(sql)
+            connection.execute("INSERT INTO schema_migrations VALUES (?, datetime('now'))", (version,))
+        connection.execute("INSERT INTO guild_protection (guild_id, enabled, channel_ids, notifications_enabled, "
+                           "detection_channel_id, updated_at) VALUES ('1', 1, '[]', 0, NULL, 'x')")
+    database.migrate()
+    assert database.protection_for(1, Config())["unresolved_action"] == "allow"

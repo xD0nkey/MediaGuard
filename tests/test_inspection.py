@@ -134,6 +134,45 @@ def test_failed_second_fetch_falls_back_to_id3_match():
     assert len(fetched) == 2
 
 
+@pytest.mark.parametrize("second_response", [b"", b"\xff\xfb\x90\x00" + b"\x00" * 10])
+def test_short_second_fetch_falls_back_to_id3_match(second_response):
+    bot, _ = service()
+    calls = []
+
+    async def fetch(item, start=0):
+        calls.append(start)
+        return second_response if start else item.content[:PREFIX_BYTES]
+
+    bot.fetch_prefix = fetch
+    result, = inspect(bot, message(attachment("song.mp3", id3_tag(50 * 1024) + MP3)))
+    assert (result.status, result.media_type, result.reason) == (Status.MATCH, "mp3", "id3_tag")
+    assert calls == [0, 50 * 1024 + 10]
+
+
+@pytest.mark.parametrize(("audio", "media_type"), [(MP3, "mp3"), (FLAC, "flac")])
+def test_sufficient_second_fetch_uses_signature(audio, media_type):
+    bot, fetched = service()
+    result, = inspect(bot, message(attachment("song.bin", id3_tag(50 * 1024) + audio)))
+    assert (result.status, result.media_type, result.reason) == (Status.MATCH, media_type, "audio_signature")
+    assert len(fetched) == 2
+
+
+@pytest.mark.parametrize("second_response", [b"", b"\xff\xfb\x90\x00"])
+def test_malformed_id3_never_uses_short_fetch_fallback(second_response):
+    bot, _ = service()
+    calls = []
+
+    async def fetch(item, start=0):
+        calls.append(start)
+        return second_response if start else item.content[:PREFIX_BYTES]
+
+    bot.fetch_prefix = fetch
+    malformed = b"ID3\x05\x00\x00" + bytes((0, 3, 0, 0)) + b"\x00" * (50 * 1024)
+    result, = inspect(bot, message(attachment("song.mp3", malformed)))
+    assert (result.status, result.reason) == (Status.UNAVAILABLE, "media_evidence_unresolved")
+    assert calls == [0]
+
+
 def test_large_id3_tag_without_audio_stays_unresolved():
     bot, _ = service()
     result, = inspect(bot, message(attachment("song.mp3", id3_tag(50 * 1024) + b"\x00" * 5000)))
@@ -155,19 +194,49 @@ def test_ordinary_attachment_is_safe_and_misleading_audio_is_unavailable():
 def test_generic_mp4_brand_and_video_are_not_claimed_as_audio():
     bot, _ = service()
     generic = b"\x00\x00\x00\x10ftypisom\x00\x00\x00\x00"
-    container, video = inspect(bot, message(attachment("song.m4a", generic), attachment("clip.mp4", b"unknown")))
+    video_brand = b"\x00\x00\x00\x10ftypavc1\x00\x00\x00\x00"
+    container, video, unknown = inspect(bot, message(attachment("clip.mp4", generic, "video/mp4"),
+                                                     attachment("clip.mp4", b"unknown"),
+                                                     attachment("song.m4a", video_brand, "audio/mp4")))
     assert container.status is Status.UNAVAILABLE
     assert video.status is Status.UNAVAILABLE
+    assert unknown.status is Status.UNAVAILABLE
 
 
-def test_download_failure_and_size_limit_are_not_safe():
+@pytest.mark.parametrize("brand", [b"M4A ", b"M4B ", b"mp42", b"isom"])
+@pytest.mark.parametrize(("filename", "mime", "expected"), [
+    ("song.m4a", "application/octet-stream", Status.MATCH),
+    ("book.m4b", None, Status.MATCH),
+    ("song.aac", None, Status.MATCH),
+    ("upload.bin", "audio/mp4", Status.MATCH),
+    ("clip.mp4", "video/mp4", Status.UNAVAILABLE),
+    ("upload.bin", "application/octet-stream", Status.UNAVAILABLE),
+])
+def test_mp4_audio_brands_require_declared_audio(brand, filename, mime, expected):
+    bot, _ = service()
+    content = b"\x00\x00\x00\x14ftyp" + brand + b"\x00\x00\x00\x00" + b"mp41"
+    result, = inspect(bot, message(attachment(filename, content, mime)))
+    assert result.status is expected
+    if expected is Status.MATCH:
+        assert result.media_type == "m4a"
+
+
+def test_download_failure_is_not_safe_and_large_files_are_inspected():
     bot, fetched = service()
     failed = attachment("song.mp3", None, "audio/mpeg", size=100)
-    large = attachment("large.txt", b"", size=bot.max_attachment_bytes + 1)
+    large = attachment("large.bin", MP3 * 10, size=200 * 1024 * 1024)
     first, second = inspect(bot, message(failed, large))
-    assert [item.status for item in (first, second)] == [Status.UNAVAILABLE, Status.UNAVAILABLE]
-    assert [item.reason for item in (first, second)] == ["download_failed", "size_limit"]
-    assert len(fetched) == 1
+    assert (first.status, first.reason) == (Status.UNAVAILABLE, "download_failed")
+    assert (second.status, second.media_type) == (Status.MATCH, "mp3")
+    assert len(fetched) == 2
+
+
+@pytest.mark.parametrize("size", [-1, "100", 1.5])
+def test_invalid_size_is_unavailable_without_fetch(size):
+    bot, fetched = service()
+    result, = inspect(bot, message(attachment("song.mp3", MP3, size=size)))
+    assert (result.status, result.reason) == (Status.UNAVAILABLE, "size_unavailable")
+    assert fetched == []
 
 
 def test_short_download_is_unavailable_even_for_plain_filename():

@@ -10,6 +10,7 @@ from .embed_phrases import normalize
 
 
 MEDIA_TYPES = ["MP3", "WAV", "FLAC", "Ogg Opus", "Ogg Vorbis", "M4A"]
+UNRESOLVED_ACTIONS = {"allow", "report"}
 
 
 def _id(value):
@@ -25,6 +26,7 @@ def _protection_payload(settings):
             "notifications_enabled": settings["notifications_enabled"],
             "detection_channel_id": str(settings["detection_channel_id"]) if settings["detection_channel_id"] else None,
             "exempt_role_ids": [str(value) for value in settings["exempt_role_ids"]],
+            "unresolved_action": settings["unresolved_action"],
             "media_types": MEDIA_TYPES}
 
 
@@ -123,7 +125,7 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         except ValueError:
             raise HTTPException(422, "Invalid configuration") from None
         if not isinstance(data, dict) or set(data) != {"guild_id", "enabled", "channel_ids", "notifications_enabled",
-                                                 "detection_channel_id", "exempt_role_ids"}:
+                                                 "detection_channel_id", "exempt_role_ids", "unresolved_action"}:
             raise HTTPException(422, "Invalid configuration")
         guild_id = _id(data["guild_id"])
         if type(data["enabled"]) is not bool or type(data["notifications_enabled"]) is not bool:
@@ -134,6 +136,8 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         selected = [_id(value) for value in channel_ids]
         if len(selected) != len(set(selected)):
             raise HTTPException(422, "Duplicate protected channel")
+        if not isinstance(data["unresolved_action"], str) or data["unresolved_action"] not in UNRESOLVED_ACTIONS:
+            raise HTTPException(422, "Invalid unresolved action")
         role_ids = data["exempt_role_ids"]
         if not isinstance(role_ids, list) or len(role_ids) > 50:
             raise HTTPException(422, "Invalid exempt roles")
@@ -158,7 +162,8 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         if not set(exempt_roles) <= {int(role["id"]) for role in guild["roles"]}:
             raise HTTPException(422, "Exempt role unavailable")
         runtime.database.save_protection(guild_id, data["enabled"], selected,
-                                         data["notifications_enabled"], detection_id, exempt_roles)
+                                         data["notifications_enabled"], detection_id, exempt_roles,
+                                         data["unresolved_action"])
         runtime.activity.record("System", "protection_configuration_saved")
         return _protection_payload(runtime.database.protection_for(guild_id, runtime.config))
 

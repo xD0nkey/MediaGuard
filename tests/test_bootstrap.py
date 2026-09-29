@@ -29,19 +29,17 @@ def test_migration_idempotent(tmp_path):
     db.migrate()
     db.migrate()
     with db.connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 5
 
 
-def test_attachment_size_configuration(tmp_path):
+def test_legacy_attachment_size_setting_is_ignored(tmp_path):
     import json
-    import pytest
 
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"discord": {"max_attachment_bytes": 1024}}), encoding="utf-8")
-    assert load(tmp_path).max_attachment_bytes == 1024
-    path.write_text(json.dumps({"discord": {"max_attachment_bytes": 0}}), encoding="utf-8")
-    with pytest.raises(ValueError):
-        load(tmp_path)
+    for value in (1024, 0, "invalid"):
+        path.write_text(json.dumps({"discord": {"enabled": True, "max_attachment_bytes": value}}), encoding="utf-8")
+        assert load(tmp_path).discord_enabled is True
+        assert not hasattr(load(tmp_path), "max_attachment_bytes")
 
 
 def test_legacy_retention_setting_is_ignored(tmp_path):

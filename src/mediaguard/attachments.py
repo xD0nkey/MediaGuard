@@ -8,8 +8,9 @@ import aiohttp
 
 
 PREFIX_BYTES = 4096
-DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a", ".m4b", ".aac"}
+MP4_AUDIO_EXTENSIONS = {".m4a", ".m4b", ".aac"}
+MP4_AUDIO_BRANDS = {b"M4A ", b"M4B ", b"mp42", b"isom"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 
 
@@ -92,6 +93,13 @@ def detect_audio_after_id3(data: bytes) -> str | None:
     return None
 
 
+def _insufficient_post_id3(data: bytes) -> bool:
+    if len(data) < 8:
+        return True
+    first_frame = _mp3_frame_length(data, 0)
+    return first_frame is not None and len(data) < first_frame + 4
+
+
 def detect_audio(data: bytes) -> str | None:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "wav"
@@ -103,16 +111,23 @@ def detect_audio(data: bytes) -> str | None:
             return "opus"
         if data[payload:payload + 7] == b"\x01vorbis":
             return "ogg-vorbis"
-    if len(data) >= 16 and data[4:8] == b"ftyp":
-        box_size = int.from_bytes(data[:4], "big")
-        if 16 <= box_size <= len(data) and (box_size - 16) % 4 == 0:
-            brands = [data[8:12]] + [data[index:index + 4] for index in range(16, box_size, 4)]
-            if b"M4A " in brands:
-                return "m4a"
     if data.startswith(b"ID3"):
         tag_end = id3_tag_end(data)
         return detect_audio_after_id3(data[tag_end:]) if tag_end is not None else None
     return "mp3" if _is_mp3_at(data, 0) else None
+
+
+def mp4_brands(data: bytes) -> set[bytes]:
+    if len(data) < 16 or data[4:8] != b"ftyp":
+        return set()
+    box_size = int.from_bytes(data[:4], "big")
+    if not 16 <= box_size <= len(data) or (box_size - 16) % 4:
+        return set()
+    return {data[8:12], *(data[index:index + 4] for index in range(16, box_size, 4))}
+
+
+def _is_declared_audio(extension, mime) -> bool:
+    return extension in MP4_AUDIO_EXTENSIONS or bool(mime and mime.startswith("audio/"))
 
 
 async def download_prefix(attachment, start: int = 0) -> bytes:
@@ -147,7 +162,7 @@ async def download_prefix(attachment, start: int = 0) -> bytes:
 
 
 async def inspect_attachment(
-    attachment, max_attachment_bytes: int, fetch_prefix=download_prefix, source="direct"
+    attachment, fetch_prefix=download_prefix, source="direct"
 ) -> InspectionResult:
     filename = attachment.filename
     extension = PurePath(filename).suffix.lower() if filename else None
@@ -163,8 +178,6 @@ async def inspect_attachment(
 
     if not isinstance(size, int) or size < 0:
         return InspectionResult(Status.UNAVAILABLE, "size_unavailable", **evidence)
-    if size > max_attachment_bytes:
-        return InspectionResult(Status.UNAVAILABLE, "size_limit", **evidence)
     try:
         prefix = await fetch_prefix(attachment)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
@@ -173,6 +186,8 @@ async def inspect_attachment(
         return InspectionResult(Status.UNAVAILABLE, "incomplete_download", **evidence)
 
     media_type = detect_audio(prefix)
+    if media_type is None and mp4_brands(prefix) & MP4_AUDIO_BRANDS and _is_declared_audio(extension, mime):
+        media_type = "m4a"
     if media_type:
         return InspectionResult(Status.MATCH, "audio_signature", media_type=media_type, **evidence)
     tag_end = id3_tag_end(prefix)
@@ -190,6 +205,8 @@ async def _inspect_after_id3(attachment, tag_end, fetch_prefix, evidence) -> Ins
     media_type = detect_audio_after_id3(after_tag)
     if media_type:
         return InspectionResult(Status.MATCH, "audio_signature", media_type=media_type, **evidence)
+    if _insufficient_post_id3(after_tag):
+        return InspectionResult(Status.MATCH, "id3_tag", media_type="mp3", **evidence)
     return None
 
 

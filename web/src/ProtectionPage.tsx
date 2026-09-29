@@ -9,7 +9,12 @@ import {
   SelectValue,
 } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
-import type { Guild, Protection, ProtectionDraft } from "./types";
+import type {
+  Guild,
+  Protection,
+  ProtectionDraft,
+  UnresolvedAction,
+} from "./types";
 import EmbedRules from "./EmbedRules";
 
 function draftOf(value: Protection): ProtectionDraft {
@@ -19,6 +24,7 @@ function draftOf(value: Protection): ProtectionDraft {
     notifications_enabled: value.notifications_enabled,
     detection_channel_id: value.detection_channel_id,
     exempt_role_ids: value.exempt_role_ids,
+    unresolved_action: value.unresolved_action,
   };
 }
 
@@ -401,6 +407,35 @@ export default function ProtectionPage({
                       </Button>
                     </p>
                   )}
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <strong>When audio can't be confirmed</strong>
+                    <p>
+                      Inconclusive messages are never deleted. Reporting posts a
+                      notice in the Detection channel when notifications are on.
+                    </p>
+                  </div>
+                  <Select
+                    value={draft.unresolved_action}
+                    onValueChange={(value) =>
+                      update({ unresolved_action: value as UnresolvedAction })
+                    }
+                    disabled={!backendAvailable}
+                  >
+                    <SelectTrigger
+                      aria-label="When audio can't be confirmed"
+                      className="w-full min-w-0 sm:w-64"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="allow">Allow (log only)</SelectItem>
+                      <SelectItem value="report">
+                        Report to Detection channel
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </section>
 

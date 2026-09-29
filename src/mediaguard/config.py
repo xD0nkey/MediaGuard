@@ -1,7 +1,6 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from .attachments import DEFAULT_MAX_ATTACHMENT_BYTES
 from .paths import project_root
 
 
@@ -10,7 +9,6 @@ class Config:
     discord_enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8765
-    max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES
     protection_enabled: bool = False
     protected_channel_ids: tuple[int, ...] = ()
     notifications_enabled: bool = False
@@ -30,9 +28,6 @@ def load(root: Path | None = None) -> Config:
     port = int(operator.get("port", 8765))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid operator port")
-    max_attachment_bytes = int(discord.get("max_attachment_bytes", DEFAULT_MAX_ATTACHMENT_BYTES))
-    if not 1 <= max_attachment_bytes <= 100 * 1024 * 1024:
-        raise ValueError("Invalid attachment inspection size limit")
     protection = data.get("protection", {})
     enabled = protection.get("enabled", False)
     channels = protection.get("channel_ids", [])
@@ -44,5 +39,5 @@ def load(root: Path | None = None) -> Config:
         raise ValueError("Invalid protected channel IDs")
     if detection_channel is not None and (type(detection_channel) is not int or detection_channel <= 0):
         raise ValueError("Invalid detection channel ID")
-    return Config(bool(discord.get("enabled", False)), host, port, max_attachment_bytes,
+    return Config(bool(discord.get("enabled", False)), host, port,
                   enabled, tuple(channels), notifications, detection_channel)

@@ -1,5 +1,5 @@
 {
-  "discord": {"enabled": false, "max_attachment_bytes": 26214400},
+  "discord": {"enabled": false},
   "protection": {"enabled": false, "channel_ids": [], "notifications_enabled": false, "detection_channel_id": null},
   "operator": {"host": "127.0.0.1", "port": 8765}
 }
