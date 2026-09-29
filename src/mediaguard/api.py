@@ -152,10 +152,6 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         runtime.activity.record("System", "protection_configuration_saved")
         return _protection_payload(runtime.database.protection_for(guild_id, runtime.config))
 
-    @app.get("/api/detections")
-    def detections():
-        return runtime.database.recent_enforcements()
-
     @app.get("/api/embed-rules")
     def embed_rules(guild_id: str):
         guild = connected_guild(guild_id)
@@ -202,5 +198,7 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
 
         @app.get("/{path:path}")
         def frontend(path: str):
+            if path.startswith("api/"):
+                raise HTTPException(404, "Not found")
             return FileResponse(web_dist / "index.html")
     return app

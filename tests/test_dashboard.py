@@ -1,12 +1,10 @@
 import asyncio
 import sqlite3
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from mediaguard.api import create_app
-from mediaguard.attachments import InspectionResult, Status
 from mediaguard.config import Config
 from mediaguard.database import Database, MIGRATIONS
 from mediaguard.runtime import Runtime
@@ -108,41 +106,19 @@ def test_protection_rejects_unknown_cross_guild_and_inaccessible_ids(tmp_path):
         assert client.get("/api/protection", params={"guild_id": "999"}).status_code == 404
 
 
-def test_detection_history_and_retention_stay_metadata_only(tmp_path):
-    app = runtime(tmp_path, Config(detection_retention_days=90))
-    app.database.save_protection(1, True, [11], False, None)
-    message = SimpleNamespace(
-        id=30, guild=SimpleNamespace(id=1, name="One"),
-        channel=SimpleNamespace(id=11, name="general"),
-        author=SimpleNamespace(id=10, display_name="Listener"),
-        content="private message body",
-    )
-    result = InspectionResult(Status.MATCH, "audio_signature", "forward",
-                              filename="sample.mp3", media_type="mp3")
-    assert app.database.reserve_enforcement(message, result, "DELETE")
-    deleted_at = app.database.set_outcome(30, deletion="succeeded")
-    app.database.set_outcome(30, notification="failed")
+def test_detection_history_route_and_table_are_absent_on_new_install(tmp_path):
+    app = runtime(tmp_path)
     with TestClient(create_app(app)) as client:
-        response = client.get("/api/detections")
-        record = response.json()[0]
-        assert record["author_name"] == "Listener"
-        assert record["author_id"] == "10"
-        assert record["channel_name"] == "general"
-        assert record["guild_name"] == "One"
-        assert record["source"] == "forward"
-        assert record["deleted_at"] == deleted_at.isoformat()
-        assert record["deletion"] == "succeeded"
-        assert record["notification"] == "failed"
-        assert "private message body" not in response.text
-        assert "cdn.discordapp.com" not in response.text
-        assert "https://" not in response.text
-        assert "base64" not in response.text
+        assert client.get("/api/detections").status_code == 404
+        assert "detections" not in client.get("/api/status").json()
+    web_dist = tmp_path / "web" / "dist"
+    (web_dist / "assets").mkdir(parents=True)
+    (web_dist / "index.html").write_text("dashboard", encoding="utf-8")
+    with TestClient(create_app(app, web_dist)) as client:
+        assert client.get("/api/detections").status_code == 404
     with app.database.connect() as connection:
-        connection.execute("UPDATE enforcement_events SET at=? WHERE message_id='30'",
-                           ((datetime.now(timezone.utc) - timedelta(days=91)).isoformat(),))
-    assert app.database.prune_enforcements(90) == 1
-    assert app.database.recent_enforcements() == []
-    assert app.database.protection_for(1, app.config)["enabled"] is True
+        names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert names == {"schema_migrations", "guild_protection", "blocked_embed_phrases"}
 
 
 def test_legacy_global_config_is_default_until_guild_override(tmp_path):
@@ -176,7 +152,8 @@ def test_saved_channel_scope_controls_enforcement_after_restart(tmp_path):
     assert matched.deletes == 1
     handle(restarted, other_guild)
     assert other_guild.deletes == 0
-    assert [row["message_id"] for row in restarted.database.recent_enforcements()] == ["32"]
+    with restarted.database.connect() as connection:
+        assert connection.execute("SELECT count(*) FROM guild_protection").fetchone()[0] == 1
 
 
 def test_rejects_oversized_discord_id_and_cross_origin_write(tmp_path):
@@ -190,27 +167,34 @@ def test_rejects_oversized_discord_id_and_cross_origin_write(tmp_path):
         assert response.status_code == 403
 
 
-def test_existing_phase_1b_audit_survives_migration(tmp_path):
+def test_existing_history_is_left_untouched_during_config_migration(tmp_path):
     path = tmp_path / "runtime" / "mediaguard.sqlite3"
     path.parent.mkdir()
     with sqlite3.connect(path) as connection:
         connection.execute(MIGRATIONS[0][1])
-        connection.execute(MIGRATIONS[1][1])
+        connection.execute("CREATE TABLE enforcement_events (message_id TEXT PRIMARY KEY, original_filename TEXT)")
         connection.executemany(
             "INSERT INTO schema_migrations VALUES (?, datetime('now'))", [(1,), (2,)]
         )
-        connection.execute(
-            """INSERT INTO enforcement_events VALUES
-            ('30', '2026-09-28T00:00:00+00:00', '1', '11', '10', 'mp3', 'direct',
-             'sample.mp3', 'DELETE', 'succeeded', '2026-09-28T00:00:01+00:00', 'not_attempted')"""
-        )
+        connection.execute("INSERT INTO enforcement_events VALUES ('30', 'legacy.mp3')")
 
     database = Database(path)
     database.migrate()
     database.migrate()
-    record = database.recent_enforcements()[0]
-    assert record["message_id"] == "30"
-    assert record["deleted_at"] == "2026-09-28T00:00:01+00:00"
-    assert record["author_name"] is None
+    with database.connect() as connection:
+        assert connection.execute("SELECT * FROM enforcement_events").fetchall() == [("30", "legacy.mp3")]
     database.save_protection(1, True, [11], False, None)
     assert database.protection_for(1, Config())["channel_ids"] == (11,)
+
+    app = Runtime(Config(protection_enabled=True), tmp_path)
+    app.start()
+
+    async def fetch(item):
+        return item.content
+
+    app.discord.fetch_prefix = fetch
+    message = Message(attachment("new.mp3", MP3), channel=Channel(11), message_id=31)
+    handle(app, message)
+    assert message.deletes == 1
+    with database.connect() as connection:
+        assert connection.execute("SELECT * FROM enforcement_events").fetchall() == [("30", "legacy.mp3")]

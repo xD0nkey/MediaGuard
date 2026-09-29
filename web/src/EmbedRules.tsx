@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Switch } from "./components/ui/switch";
 import type { EmbedRule } from "./types";
 
@@ -15,9 +14,11 @@ function errorText(error: unknown) {
 export default function EmbedRules({
   guildId,
   protectionEnabled,
+  backendAvailable,
 }: {
   guildId: string;
   protectionEnabled: boolean;
+  backendAvailable: boolean;
 }) {
   const [rules, setRules] = useState<EmbedRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,7 +90,7 @@ export default function EmbedRules({
   }
 
   async function save() {
-    if (!draft || busy) return;
+    if (!backendAvailable || !draft || busy) return;
     if (!draft.name.trim() || !draft.phrase.trim()) {
       setFeedback("Enter a name and blocked phrase.");
       return;
@@ -110,7 +111,7 @@ export default function EmbedRules({
   }
 
   async function toggle(item: EmbedRule, enabled: boolean) {
-    if (busy) return;
+    if (!backendAvailable || busy) return;
     setBusy(true);
     setFeedback("");
     try {
@@ -123,7 +124,7 @@ export default function EmbedRules({
   }
 
   async function remove(ruleId: string) {
-    if (busy) return;
+    if (!backendAvailable || busy) return;
     setBusy(true);
     setFeedback("");
     try {
@@ -150,14 +151,20 @@ export default function EmbedRules({
   }
 
   return (
-    <Card size="sm" className="embed-rules-card">
-      <CardHeader className="card-heading-line">
-        <CardTitle>Blocked embed phrases</CardTitle>
+    <section className="form-section embed-rules-section">
+      <div className="section-heading-line">
+        <h2>Blocked embed phrases</h2>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          disabled={busy || loading || rules.length >= 50 || draft !== null}
+          disabled={
+            !backendAvailable ||
+            busy ||
+            loading ||
+            rules.length >= 50 ||
+            draft !== null
+          }
           onClick={() => {
             setDraft({ name: "", phrase: "", enabled: true });
             setFeedback("");
@@ -165,134 +172,134 @@ export default function EmbedRules({
         >
           Add phrase
         </Button>
-      </CardHeader>
-      <CardContent>
-        <p className="rules-intro">
-          Explicit phrases removed when found in Discord embed text.
-          {!protectionEnabled && " Protection is currently off."}
-        </p>
-        {loading ? (
-          <p className="rules-state">Loading blocked phrases…</p>
-        ) : !rules.length && !draft ? (
-          <p className="rules-state">No blocked phrases configured.</p>
-        ) : (
-          <div className="rules-list">
-            {rules.map((item) => (
-              <div className="rule-row" key={item.rule_id}>
-                <div className="rule-copy">
-                  <strong>{item.name}</strong>
-                  <span>“{item.phrase}”</span>
-                </div>
-                {deleting === item.rule_id ? (
-                  <div className="rule-actions">
-                    <span>Delete this phrase?</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDeleting(null)}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => void remove(item.rule_id)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="rule-actions">
-                    <Switch
-                      aria-label={`${item.enabled ? "Disable" : "Enable"} ${item.name}`}
-                      checked={item.enabled}
-                      disabled={busy}
-                      onCheckedChange={(enabled) => void toggle(item, enabled)}
-                    />
-                    <span>{item.enabled ? "Enabled" : "Disabled"}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy || draft !== null}
-                      onClick={() => {
-                        setDraft(item);
-                        setFeedback("");
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy || draft !== null}
-                      onClick={() => setDeleting(item.rule_id)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                )}
+      </div>
+      <p className="rules-intro">
+        Phrases matched in Discord embed text.
+        {!protectionEnabled && " Protection is currently off."}
+      </p>
+      {loading ? (
+        <p className="rules-state">Loading blocked phrases…</p>
+      ) : !rules.length && !draft ? (
+        <p className="rules-state">No blocked phrases configured.</p>
+      ) : (
+        <div className="rules-list">
+          {rules.map((item) => (
+            <div className="rule-row" key={item.rule_id}>
+              <div className="rule-copy">
+                <strong>{item.name}</strong>
+                <span>“{item.phrase}”</span>
               </div>
-            ))}
-          </div>
-        )}
-        {draft && (
-          <div className="rule-editor">
-            <div className="rule-fields">
-              <label>
-                Name
-                <input
-                  value={draft.name}
-                  maxLength={80}
-                  onChange={(event) =>
-                    setDraft({ ...draft, name: event.target.value })
-                  }
-                  placeholder="Opalite leak"
-                />
-              </label>
-              <label>
-                Blocked phrase
-                <input
-                  value={draft.phrase}
-                  maxLength={160}
-                  onChange={(event) =>
-                    setDraft({ ...draft, phrase: event.target.value })
-                  }
-                  placeholder="the fate of opalite"
-                />
-              </label>
+              {deleting === item.rule_id ? (
+                <div className="rule-actions">
+                  <span>Delete this phrase?</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDeleting(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!backendAvailable || busy}
+                    onClick={() => void remove(item.rule_id)}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              ) : (
+                <div className="rule-actions">
+                  <Switch
+                    aria-label={`${item.enabled ? "Disable" : "Enable"} ${item.name}`}
+                    checked={item.enabled}
+                    disabled={!backendAvailable || busy}
+                    onCheckedChange={(enabled) => void toggle(item, enabled)}
+                  />
+                  <span>{item.enabled ? "Enabled" : "Disabled"}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!backendAvailable || busy || draft !== null}
+                    onClick={() => {
+                      setDraft(item);
+                      setFeedback("");
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!backendAvailable || busy || draft !== null}
+                    onClick={() => setDeleting(item.rule_id)}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              )}
             </div>
-            <div className="rule-editor-actions">
-              <Button
-                type="button"
-                size="sm"
-                disabled={busy}
-                onClick={() => void save()}
-              >
-                {busy ? "Saving…" : "Save phrase"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => setDraft(null)}
-              >
-                Cancel
-              </Button>
-            </div>
+          ))}
+        </div>
+      )}
+      {draft && (
+        <div className="rule-editor">
+          <div className="rule-fields">
+            <label>
+              Name
+              <input
+                value={draft.name}
+                disabled={!backendAvailable}
+                maxLength={80}
+                onChange={(event) =>
+                  setDraft({ ...draft, name: event.target.value })
+                }
+                placeholder="Rule name"
+              />
+            </label>
+            <label>
+              Blocked phrase
+              <input
+                value={draft.phrase}
+                disabled={!backendAvailable}
+                maxLength={160}
+                onChange={(event) =>
+                  setDraft({ ...draft, phrase: event.target.value })
+                }
+                placeholder="Phrase to block"
+              />
+            </label>
           </div>
-        )}
-        {feedback && (
-          <p className="rules-feedback" role="status">
-            {feedback}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+          <div className="rule-editor-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={!backendAvailable || busy}
+              onClick={() => void save()}
+            >
+              {busy ? "Saving…" : "Save phrase"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => setDraft(null)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {feedback && (
+        <p className="rules-feedback" role="status">
+          {feedback}
+        </p>
+      )}
+    </section>
   );
 }

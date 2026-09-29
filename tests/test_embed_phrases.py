@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+import asyncio
 from types import SimpleNamespace
 
 import discord
@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 from mediaguard.api import create_app
 from mediaguard.attachments import Status
 from mediaguard.embed_phrases import match_embeds, normalize
+from mediaguard.discord_service import make_client
 from test_dashboard import runtime as dashboard_runtime
-from test_enforcement import Channel, Message, handle, setup
+from test_enforcement import Channel, Message, assert_no_history, handle, setup
 from test_inspection import MP3, attachment
 
 
@@ -113,10 +114,70 @@ def test_bot_webhook_self_and_forwarded_enforcement(tmp_path, monkeypatch):
     for message in (safe_bot, own, missing):
         handle(runtime, message)
         assert message.deletes == 0
-    records = {row["message_id"]: row for row in runtime.database.recent_enforcements()}
-    assert set(records) == {"30", "31", "33", "35"}
-    assert records["35"]["source"] == "forwarded_embed"
-    assert records["35"]["detection_kind"] == "embed_phrase"
+    assert_no_history(runtime)
+
+
+def test_bot_embed_added_after_message_creation(tmp_path):
+    destination = Channel(40)
+    runtime = setup(tmp_path, channels=(20,), notifications=True, detection_channel_id=40)
+    add_rule(runtime, phrase="opalite")
+    message = Message(channel=Channel(20), detection_channel=destination, message_id=60)
+    message.author.bot = True
+    message.embeds = []
+    message.content = ""
+    client = make_client(runtime.discord)
+    client._connection.user = SimpleNamespace(id=99)
+
+    async def run():
+        try:
+            await client.on_message(message)
+            assert message.deletes == 0
+            message.embeds = [embed(fields=[("Artist", "Taylor Swift"), ("Track", "Opalite")])]
+            await client.on_message_edit(message, message)
+            await client.on_message_edit(message, message)
+
+            other = message_with_embed(embed(fields=[("Track", "Another song")]),
+                                       bot=True, message_id=61)
+            await client.on_message(other)
+            assert other.deletes == 0
+
+            own = message_with_embed(embed(fields=[("Track", "Opalite")]),
+                                     bot=True, message_id=62)
+            own.author.id = 99
+            await client.on_message_edit(own, own)
+            assert own.deletes == 0
+
+            plain = Message(channel=Channel(20), message_id=63, content="opalite")
+            plain.embeds = []
+            await client.on_message(plain)
+            assert plain.deletes == 0
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert message.deletes == 1
+    assert len(destination.sent) == 1
+    assert destination.sent[0]["embed"].title == "Blocked embed phrase"
+    assert_no_history(runtime)
+
+
+def test_rule_update_applies_without_restart(tmp_path):
+    runtime = setup(tmp_path, channels=(20,))
+    add_rule(runtime, phrase="opalite", enabled=False)
+    first = message_with_embed(embed(fields=[("Track", "Opalite")]), bot=True, message_id=64)
+    handle(runtime, first)
+    assert first.deletes == 0
+
+    runtime.database.update_embed_rule(1, "a", "Opalite leak", "opalite", normalize("opalite"), True)
+    second = message_with_embed(embed(fields=[("Track", "OPALITE")]), bot=True, message_id=65)
+    handle(runtime, second)
+    assert second.deletes == 1
+
+    out_of_scope = message_with_embed(embed(fields=[("Track", "Opalite")]),
+                                      bot=True, message_id=66)
+    out_of_scope.channel = Channel(21)
+    handle(runtime, out_of_scope)
+    assert out_of_scope.deletes == 0
 
 
 def test_disabled_states_audio_precedence_and_duplicate(tmp_path):
@@ -135,9 +196,8 @@ def test_disabled_states_audio_precedence_and_duplicate(tmp_path):
     assert both.deletes == 1
     handle(runtime, both)
     assert both.deletes == 1
-    record = runtime.database.recent_enforcements()[0]
-    assert record["detection_kind"] == "audio"
-    assert record["rule_id"] is None
+    assert result[0].media_type == "mp3"
+    assert_no_history(runtime)
 
     off = setup(tmp_path / "off", enabled=False)
     add_rule(off)
@@ -158,7 +218,7 @@ def test_multiple_matching_embeds_still_delete_once(tmp_path):
     result = handle(runtime, message)
     assert [item.status for item in result] == [Status.MATCH]
     assert message.deletes == 1
-    assert len(runtime.database.recent_enforcements()) == 1
+    assert_no_history(runtime)
 
 
 def test_embed_deletion_and_notification_outcomes_and_privacy(tmp_path):
@@ -171,7 +231,6 @@ def test_embed_deletion_and_notification_outcomes_and_privacy(tmp_path):
     failed = message_with_embed(value, message_id=50)
     failed.fail_delete = True
     assert handle(runtime, failed)[0].status is Status.MATCH
-    assert runtime.database.recent_enforcements()[0]["deletion"] == "failed_or_unknown"
     assert destination.sent == []
 
     success = message_with_embed(value, message_id=51)
@@ -182,28 +241,25 @@ def test_embed_deletion_and_notification_outcomes_and_privacy(tmp_path):
     notice = destination.sent[0]["embed"].to_dict()
     serialized = str(notice)
     assert "Opalite leak" in serialized
+    assert next(field["value"] for field in notice["fields"] if field["name"] == "User") == "<@10>"
+    assert all(field["name"] != "Discord user ID" for field in notice["fields"])
+    assert next(field["value"] for field in notice["fields"] if field["name"] == "Deleted at").startswith("<t:")
+    assert destination.sent[0]["allowed_mentions"].users is False
     assert "Forwarded embed" not in serialized
     assert "private embed sentence" not in serialized
     assert "private field" not in serialized
     assert "example.invalid" not in serialized
-    with runtime.database.connect() as connection:
-        rows = str(connection.execute("SELECT * FROM enforcement_events").fetchall())
-    assert "private embed sentence" not in rows
-    assert "private field" not in rows
-    assert "example.invalid" not in rows
+    assert_no_history(runtime)
     with TestClient(create_app(runtime)) as client:
-        history = client.get("/api/detections").text
-        assert "private embed sentence" not in history
-        assert "private field" not in history
-        assert "example.invalid" not in history
+        assert client.get("/api/detections").status_code == 404
 
     destination.fail_send = True
     notification_failed = message_with_embed(value, message_id=52)
     notification_failed.guild.get_channel = lambda key: destination if key == 40 else None
     handle(runtime, notification_failed)
-    record = runtime.database.recent_enforcements()[0]
-    assert record["deletion"] == "succeeded"
-    assert record["notification"] == "failed_or_unknown"
+    assert notification_failed.deletes == 1
+    assert "detection_notification_failed" in str(runtime.activity.recent())
+    assert_no_history(runtime)
 
 
 def api_payload(**changes):
@@ -255,23 +311,18 @@ def test_rule_api_lifecycle_scope_validation_and_retention(tmp_path):
         assert client.get("/api/embed-rules", params={"guild_id": "1"}).json() == []
 
 
-def test_deleted_rule_keeps_short_audit_name_without_embed_content(tmp_path):
+def test_event_is_forgotten_while_rule_configuration_persists(tmp_path):
     runtime = setup(tmp_path)
     add_rule(runtime)
     add_rule(runtime, rule_id="b", name="Retained rule", phrase="another song")
     source = message_with_embed(embed(description="The Fate of Opalite · hidden source content"))
     handle(runtime, source)
-    assert runtime.database.delete_embed_rule(1, "a")
-    row = runtime.database.recent_enforcements()[0]
-    assert row["rule_id"] == "a"
-    assert row["rule_name"] == "Opalite leak"
-    assert "hidden source content" not in str(row)
-    with runtime.database.connect() as connection:
-        connection.execute("UPDATE enforcement_events SET at=? WHERE message_id='30'",
-                           ((datetime.now(timezone.utc) - timedelta(days=91)).isoformat(),))
-    assert runtime.database.prune_enforcements(90) == 1
-    assert runtime.database.recent_enforcements() == []
-    assert runtime.database.embed_rules(1)[0]["name"] == "Retained rule"
+    assert source.deletes == 1
+    assert_no_history(runtime)
+    restarted = setup(tmp_path)
+    assert {rule["name"] for rule in restarted.database.embed_rules(1)} == {
+        "Opalite leak", "Retained rule"
+    }
 
 
 def test_no_external_http_for_embeds(tmp_path, monkeypatch):

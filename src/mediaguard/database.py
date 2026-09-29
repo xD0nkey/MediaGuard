@@ -1,21 +1,12 @@
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from .paths import database_path
 
 
 MIGRATIONS = [
     (1, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"),
-    (2, """CREATE TABLE enforcement_events (
-        message_id TEXT PRIMARY KEY, at TEXT NOT NULL, guild_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL, author_id TEXT NOT NULL, media_type TEXT NOT NULL,
-        source TEXT NOT NULL, original_filename TEXT, mode TEXT NOT NULL,
-        deletion TEXT NOT NULL, deleted_at TEXT, notification TEXT NOT NULL
-    )"""),
-    (3, "ALTER TABLE enforcement_events ADD COLUMN author_name TEXT"),
-    (4, "ALTER TABLE enforcement_events ADD COLUMN channel_name TEXT"),
-    (5, "ALTER TABLE enforcement_events ADD COLUMN guild_name TEXT"),
     (6, """CREATE TABLE guild_protection (
         guild_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL,
         channel_ids TEXT NOT NULL, notifications_enabled INTEGER NOT NULL,
@@ -27,9 +18,6 @@ MIGRATIONS = [
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         UNIQUE(guild_id, normalized_phrase)
     )"""),
-    (8, "ALTER TABLE enforcement_events ADD COLUMN detection_kind TEXT NOT NULL DEFAULT 'audio'"),
-    (9, "ALTER TABLE enforcement_events ADD COLUMN rule_id TEXT"),
-    (10, "ALTER TABLE enforcement_events ADD COLUMN rule_name TEXT"),
 ]
 
 
@@ -89,11 +77,6 @@ class Database:
                  datetime.now(timezone.utc).isoformat()),
             )
 
-    def prune_enforcements(self, retention_days):
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
-        with self.connect() as connection:
-            return connection.execute("DELETE FROM enforcement_events WHERE at < ?", (cutoff,)).rowcount
-
     def embed_rules(self, guild_id, *, enabled_only=False):
         with self.connect() as connection:
             connection.row_factory = sqlite3.Row
@@ -133,53 +116,3 @@ class Database:
                 "DELETE FROM blocked_embed_phrases WHERE guild_id=? AND rule_id=?",
                 (str(guild_id), rule_id),
             ).rowcount == 1
-
-    def enforcement_summary(self):
-        with self.connect() as connection:
-            count, recent = connection.execute(
-                """SELECT sum(CASE WHEN detection_kind='audio' THEN 1 ELSE 0 END), max(at)
-                FROM enforcement_events WHERE deletion='succeeded'"""
-            ).fetchone()
-            return {"audio_blocked": count or 0, "recent_detection_at": recent}
-
-    def reserve_enforcement(self, message, result, mode):
-        author_name = getattr(message.author, "display_name", None)
-        channel_name = getattr(message.channel, "name", None)
-        guild_name = getattr(message.guild, "name", None)
-        with self.connect() as connection:
-            cursor = connection.execute(
-                """INSERT OR IGNORE INTO enforcement_events
-                (message_id, at, guild_id, channel_id, author_id, media_type, source, original_filename,
-                 mode, deletion, notification, author_name, channel_name, guild_name,
-                 detection_kind, rule_id, rule_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_attempted', 'not_attempted', ?, ?, ?, ?, ?, ?)""",
-                (str(message.id), datetime.now(timezone.utc).isoformat(), str(message.guild.id),
-                 str(message.channel.id), str(message.author.id), result.media_type or "", result.source,
-                 result.filename[:255] if result.filename else None, mode,
-                 author_name[:100] if author_name else None,
-                 channel_name[:100] if channel_name else None,
-                 guild_name[:100] if guild_name else None,
-                 "embed_phrase" if result.rule_id else "audio", result.rule_id,
-                 result.rule_name[:80] if result.rule_name else None),
-            )
-            return cursor.rowcount == 1
-
-    def set_outcome(self, message_id, *, deletion=None, notification=None):
-        field, value = ("deletion", deletion) if deletion is not None else ("notification", notification)
-        deleted_at = datetime.now(timezone.utc) if deletion == "succeeded" else None
-        with self.connect() as connection:
-            if deleted_at:
-                connection.execute("UPDATE enforcement_events SET deletion=?, deleted_at=? WHERE message_id=?",
-                                   (value, deleted_at.isoformat(), str(message_id)))
-            else:
-                connection.execute(f"UPDATE enforcement_events SET {field}=? WHERE message_id=?", (value, str(message_id)))
-        return deleted_at
-
-    def recent_enforcements(self, limit=50):
-        with self.connect() as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                "SELECT * FROM enforcement_events ORDER BY at DESC, rowid DESC LIMIT ?",
-                (max(0, min(limit, 200)),),
-            ).fetchall()
-            return [dict(row) for row in rows]

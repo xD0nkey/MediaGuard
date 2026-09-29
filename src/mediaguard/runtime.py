@@ -20,7 +20,6 @@ class Runtime:
 
     def start(self):
         self.database.migrate()
-        self.database.prune_enforcements(self.config.detection_retention_days)
         self.started_at = time.monotonic()
         self.activity.record("System", "runtime_started")
         if self.config.discord_enabled:
@@ -33,6 +32,4 @@ class Runtime:
     def snapshot(self):
         return {"app": "MediaGuard", "uptime_seconds": int(time.monotonic() - self.started_at) if self.started_at else 0,
                 "database": self.database.status(), "discord": self.discord.snapshot(),
-                "detections": self.database.enforcement_summary(),
-                "detection_retention_days": self.config.detection_retention_days,
                 "services": [{"name": "Operator backend", "state": "running" if self.started_at else "stopped"}]}

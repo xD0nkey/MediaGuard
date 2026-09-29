@@ -1,43 +1,21 @@
 import { useEffect, useState } from "react";
-import { Badge } from "./components/ui/badge";
-import { Button } from "./components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
-import DetectionsPage from "./DetectionsPage";
-import { utcTime } from "./format";
 import ProtectionPage from "./ProtectionPage";
-import type { ActivityEvent, Detection, Status } from "./types";
+import type { ActivityEvent, Status } from "./types";
 
-type Section =
-  "Overview" | "Protection" | "Detections" | "Activity" | "Settings";
-const sections: Section[] = [
-  "Overview",
-  "Protection",
-  "Detections",
-  "Activity",
-  "Settings",
-];
+type ProtectionContext = { server: string | null; enabled: boolean | null };
 
-const activityLabels: Record<string, string> = {
-  gateway_ready: "Bot connected",
-  gateway_disconnected: "Bot disconnected",
-  gateway_resumed: "Bot reconnected",
-  protection_configuration_saved: "Protection configuration saved",
-  embed_rule_saved: "Blocked phrase saved",
-  embed_rule_deleted: "Blocked phrase deleted",
-  message_removed: "Detection deleted",
+const issueLabels: Record<string, string> = {
   detection_notification_failed: "Detection notification failed",
-  detection_notification_unavailable: "Detection notification unavailable",
-  delete_failed: "Deletion failed or unconfirmed",
-  delete_permission_missing: "Deletion permission missing",
-  inspection_unavailable: "Inspection unavailable",
-  runtime_started: "MediaGuard started",
-  runtime_stopped: "MediaGuard stopped",
+  detection_notification_unavailable: "Detection channel unavailable",
+  delete_failed: "Message deletion failed or was unconfirmed",
+  delete_permission_missing: "Message deletion permission missing",
+  inspection_unavailable: "Media inspection unavailable",
+  gateway_disconnected: "Discord disconnected",
 };
 
 function useRuntimeData() {
   const [status, setStatus] = useState<Status | null>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [detections, setDetections] = useState<Detection[]>([]);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -46,17 +24,17 @@ function useRuntimeData() {
         const responses = await Promise.all([
           fetch("/api/status"),
           fetch("/api/activity"),
-          fetch("/api/detections"),
         ]);
         if (responses.some((response) => !response.ok)) throw new Error();
-        const [nextStatus, nextEvents, nextDetections] = await Promise.all(
+        const [nextStatus, nextEvents] = await Promise.all(
           responses.map((response) => response.json()),
         );
         setStatus(nextStatus);
         setEvents(nextEvents);
-        setDetections(nextDetections);
         setError(false);
       } catch {
+        setStatus(null);
+        setEvents([]);
         setError(true);
       }
     };
@@ -64,215 +42,139 @@ function useRuntimeData() {
     const timer = window.setInterval(refresh, 10000);
     return () => window.clearInterval(timer);
   }, []);
-  return { status, events, detections, error };
+  return { status, events, error };
 }
 
-function ActivityList({ events }: { events: ActivityEvent[] }) {
-  if (!events.length)
-    return <p className="empty-state">No activity has been recorded yet.</p>;
+function StatusValue({
+  tone,
+  children,
+}: {
+  tone: "good" | "muted";
+  children: React.ReactNode;
+}) {
   return (
-    <ol className="activity-list">
-      {events.map((event, index) => (
-        <li key={`${event.at}-${index}`}>
-          <Badge
-            variant={event.category === "Error" ? "destructive" : "outline"}
-          >
-            {event.category}
-          </Badge>
-          <span>
-            {activityLabels[event.code] ?? event.code.replaceAll("_", " ")}
-          </span>
-          <time dateTime={event.at}>
-            {new Date(event.at).toLocaleTimeString()}
-          </time>
-        </li>
-      ))}
-    </ol>
+    <span className={`status-value ${tone}`}>
+      <span className="status-dot" aria-hidden="true" />
+      {children}
+    </span>
   );
 }
 
 function Overview({
   status,
   events,
-  onActivity,
+  error,
+  protection,
 }: {
   status: Status | null;
   events: ActivityEvent[];
-  onActivity: () => void;
+  error: boolean;
+  protection: ProtectionContext;
 }) {
-  const connected = status?.discord.state === "ready";
+  const discordReady = status?.discord.state === "ready";
+  const issue =
+    events[0]?.category === "Error"
+      ? (issueLabels[events[0].code] ?? events[0].code.replaceAll("_", " "))
+      : null;
+
   return (
-    <div className="content">
-      <div className="page-heading">
-        <h1>Overview</h1>
-        <p>Connection and retained detection history.</p>
+    <section className="overview-column" aria-labelledby="overview-heading">
+      <div className="column-heading">
+        <h1 id="overview-heading">Overview</h1>
       </div>
-      <div className="overview-grid">
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle>Bot</CardTitle>
-          </CardHeader>
-          <CardContent className="overview-value">
-            <Badge variant={connected ? "secondary" : "outline"}>
-              {connected ? "Online" : "Offline"}
-            </Badge>
-            <p>
-              {connected
-                ? `${status?.discord.guild_count ?? 0} connected servers`
-                : "Discord connection unavailable"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle>Audio blocked</CardTitle>
-          </CardHeader>
-          <CardContent className="overview-value">
-            <strong>{status?.detections.audio_blocked ?? "—"}</strong>
-            <p>Confirmed deletions in retained history</p>
-          </CardContent>
-        </Card>
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle>Recent detection</CardTitle>
-          </CardHeader>
-          <CardContent className="overview-value">
-            <strong className="overview-time">
-              {status?.detections.recent_detection_at
-                ? utcTime(status.detections.recent_detection_at)
-                : "No detections yet"}
-            </strong>
-            <p>Most recent confirmed deletion</p>
-          </CardContent>
-        </Card>
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle>Storage</CardTitle>
-          </CardHeader>
-          <CardContent className="overview-value">
-            <Badge variant="outline">{status?.database ?? "Unknown"}</Badge>
-            <p>Metadata-only local audit</p>
-          </CardContent>
-        </Card>
-      </div>
-      <Card size="sm" className="overview-activity">
-        <CardHeader className="card-heading-line">
-          <CardTitle>Recent activity</CardTitle>
-          <Button variant="ghost" size="sm" onClick={onActivity}>
-            View all
-          </Button>
-        </CardHeader>
-        <CardContent className="activity-content">
-          <ActivityList events={events.slice(0, 6)} />
-        </CardContent>
-      </Card>
-    </div>
+      <dl className="status-surface">
+        <div>
+          <dt>Bot</dt>
+          <dd>
+            <StatusValue tone={status ? "good" : "muted"}>
+              {status ? "Online" : error ? "Offline" : "Connecting"}
+            </StatusValue>
+          </dd>
+        </div>
+        <div>
+          <dt>Discord</dt>
+          <dd>
+            <StatusValue tone={discordReady ? "good" : "muted"}>
+              {discordReady
+                ? "Connected"
+                : (status?.discord.state ?? "Unavailable")}
+            </StatusValue>
+          </dd>
+        </div>
+        <div>
+          <dt>Protection</dt>
+          <dd>
+            <StatusValue tone={protection.enabled && !error ? "good" : "muted"}>
+              {error
+                ? "Unavailable"
+                : protection.enabled === null
+                  ? "Unknown"
+                  : protection.enabled
+                    ? "Enabled"
+                    : "Disabled"}
+            </StatusValue>
+          </dd>
+        </div>
+        <div>
+          <dt>Server</dt>
+          <dd>
+            {error
+              ? "Unavailable"
+              : (protection.server ?? "No connected server")}
+          </dd>
+        </div>
+      </dl>
+      {!error && issue && (
+        <p className="operational-issue" role="status">
+          <span className="status-dot" aria-hidden="true" />
+          <strong>Operational issue</strong>
+          <span>{issue}</span>
+        </p>
+      )}
+    </section>
   );
 }
 
 export default function App() {
-  const [section, setSection] = useState<Section>("Overview");
-  const { status, events, detections, error } = useRuntimeData();
-  const connected = status?.discord.state === "ready";
+  const [protection, setProtection] = useState<ProtectionContext>({
+    server: null,
+    enabled: null,
+  });
+  const { status, events, error } = useRuntimeData();
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            M
-          </span>
-          <div>
-            <strong>MediaGuard</strong>
-            <small>Operator console</small>
-          </div>
+          <strong>MediaGuard</strong>
+          <small>Operator console</small>
         </div>
-        <nav aria-label="Main navigation">
-          {sections.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={section === item ? "nav-item active" : "nav-item"}
-              aria-current={section === item ? "page" : undefined}
-              onClick={() => setSection(item)}
-            >
-              {item}
-            </Button>
-          ))}
-        </nav>
-        <div className="sidebar-foot">Local operator</div>
-      </aside>
-      <main>
-        <header className="topbar">
-          <span>MediaGuard / {section}</span>
-          <Badge
-            variant={connected ? "secondary" : "outline"}
-            className={connected ? "connection connected" : "connection"}
-          >
-            {connected ? "Bot connected" : "Bot offline"}
-          </Badge>
-        </header>
+        <span
+          className={`topbar-status ${status ? "good" : error ? "error" : "muted"}`}
+        >
+          <span className="status-dot" aria-hidden="true" />
+          {status ? "Online" : error ? "Offline" : "Connecting"}
+        </span>
+      </header>
+      <main className="console">
         {error && (
-          <div className="api-error" role="alert">
-            The operator backend is unavailable. Start MediaGuard and refresh
-            this page.
-          </div>
+          <p className="inline-alert" role="alert">
+            Operator backend unavailable. Start MediaGuard to reconnect.
+          </p>
         )}
-        {section === "Overview" && (
+        <div className="console-columns">
           <Overview
             status={status}
             events={events}
-            onActivity={() => setSection("Activity")}
+            error={error}
+            protection={protection}
           />
-        )}
-        <div hidden={section !== "Protection"}>
           <ProtectionPage
             discordState={status?.discord.state ?? "unavailable"}
+            backendAvailable={!error}
+            onContextChange={setProtection}
           />
         </div>
-        {section === "Detections" && <DetectionsPage detections={detections} />}
-        {section === "Activity" && (
-          <div className="content">
-            <div className="page-heading">
-              <h1>Activity</h1>
-              <p>Operational events from this runtime.</p>
-            </div>
-            <Card size="sm">
-              <CardContent className="activity-content">
-                <ActivityList events={events} />
-              </CardContent>
-            </Card>
-          </div>
-        )}
-        {section === "Settings" && (
-          <div className="content">
-            <div className="page-heading">
-              <h1>Settings</h1>
-              <p>Local runtime configuration.</p>
-            </div>
-            <Card size="sm">
-              <CardContent className="settings-content">
-                <dl>
-                  <div>
-                    <dt>Discord connection</dt>
-                    <dd>{status?.discord.state ?? "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Detection retention</dt>
-                    <dd>{status?.detection_retention_days ?? "—"} days</dd>
-                  </div>
-                </dl>
-                <p>
-                  The bot token belongs in local secrets.env. Protection is
-                  configured per server on the Protection page. MediaGuard does
-                  not retain blocked audio.
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        )}
       </main>
     </div>
   );

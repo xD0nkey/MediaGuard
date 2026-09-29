@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from datetime import datetime, timezone
 from discord import AllowedMentions, MessageReferenceType
 
@@ -42,6 +43,14 @@ def make_client(service):
             except Exception:
                 service.activity.record("Error", "discord_intake_error")
 
+        async def on_message_edit(self, _before, after):
+            if not after.embeds:
+                return
+            try:
+                await service.handle_message(after, self.user.id if self.user else None, embed_only=True)
+            except Exception:
+                service.activity.record("Error", "discord_intake_error")
+
     return Client(intents=intents)
 
 
@@ -73,6 +82,20 @@ class DiscordService:
         self._guild_count = None
         self._ready_at = None
         self._reconnects = 0
+        self._attempted_messages = {}
+
+    def _reserve_attempt(self, message_id):
+        now = time.monotonic()
+        with self._lock:
+            self._attempted_messages = {
+                key: expires for key, expires in self._attempted_messages.items() if expires > now
+            }
+            if message_id in self._attempted_messages:
+                return False
+            if len(self._attempted_messages) >= 4096:
+                self._attempted_messages.pop(next(iter(self._attempted_messages)))
+            self._attempted_messages[message_id] = now + 300
+            return True
 
     def snapshot(self):
         with self._lock:
@@ -117,11 +140,13 @@ class DiscordService:
             self._reconnects += 1
         self.activity.record("Discord", "gateway_resumed")
 
-    async def inspect_message(self, message, bot_user_id=None, embed_rules=()) -> tuple[InspectionResult, ...]:
+    async def inspect_message(
+        self, message, bot_user_id=None, embed_rules=(), embed_only=False
+    ) -> tuple[InspectionResult, ...]:
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
 
-        attachments = [(attachment, "direct") for attachment in message.attachments]
+        attachments = [] if embed_only else [(attachment, "direct") for attachment in message.attachments]
         results = []
         forwarded_embeds = []
         reference = getattr(message, "reference", None)
@@ -132,7 +157,8 @@ class DiscordService:
                     InspectionResult(Status.UNAVAILABLE, "forward_snapshot_unavailable", "forward")
                 )
             for snapshot in snapshots:
-                attachments.extend((attachment, "forward") for attachment in snapshot.attachments)
+                if not embed_only:
+                    attachments.extend((attachment, "forward") for attachment in snapshot.attachments)
                 forwarded_embeds.extend(snapshot.embeds)
                 if not snapshot.attachments and not snapshot.embeds:
                     results.append(
@@ -153,27 +179,25 @@ class DiscordService:
         elif forwarded_embeds:
             results.append(InspectionResult(Status.UNAVAILABLE, "forward_embeds_not_inspected", "forward"))
 
-        if any(result.status is Status.MATCH for result in results):
-            self.activity.record("Discord", "media_match_observed")
         if any(result.status is Status.UNAVAILABLE for result in results):
             self.activity.record("Error", "inspection_unavailable")
         return tuple(results)
 
-    async def handle_message(self, message, bot_user_id=None):
+    async def handle_message(self, message, bot_user_id=None, *, embed_only=False):
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
         settings = self.database.protection_for(message.guild.id, self.config) if self.config and self.database else None
         if settings and settings["channel_ids"] and message.channel.id not in settings["channel_ids"]:
             return ()
         rules = self.database.embed_rules(message.guild.id, enabled_only=True) if settings and settings["enabled"] and bot_user_id is not None else ()
-        results = await self.inspect_message(message, bot_user_id, rules)
+        results = await self.inspect_message(message, bot_user_id, rules, embed_only)
         if not settings or not settings["enabled"]:
             return results
         match = next((result for result in results if result.status is Status.MATCH), None)
         if match is None:
             return results
 
-        if not self.database.reserve_enforcement(message, match, "DELETE"):
+        if not self._reserve_attempt(message.id):
             return results
 
         member = message.guild.me
@@ -189,30 +213,21 @@ class DiscordService:
             notify_permissions = detection_channel.permissions_for(member) if detection_channel else None
             can_notify = bool(notify_permissions and notify_permissions.view_channel and notify_permissions.send_messages)
 
-        self.database.set_outcome(message.id, deletion="attempting")
         try:
             await message.delete()
         except Exception:
-            self.database.set_outcome(message.id, deletion="failed_or_unknown")
             self.activity.record("Error", "delete_failed")
             return results
-        deleted_at = self.database.set_outcome(message.id, deletion="succeeded")
-        self.activity.record("Discord", "message_removed")
+        deleted_at = datetime.now(timezone.utc)
 
         if settings["notifications_enabled"]:
             if not can_notify:
-                self.database.set_outcome(message.id, notification="failed")
                 self.activity.record("Error", "detection_notification_unavailable")
                 return results
-            self.database.set_outcome(message.id, notification="attempting")
             try:
                 await detection_channel.send(embed=detection_embed(message, match, deleted_at), allowed_mentions=AllowedMentions.none())
             except Exception:
-                self.database.set_outcome(message.id, notification="failed_or_unknown")
                 self.activity.record("Error", "detection_notification_failed")
-            else:
-                self.database.set_outcome(message.id, notification="succeeded")
-                self.activity.record("Discord", "detection_notification_sent")
         return results
 
     def start(self, token: str | None):

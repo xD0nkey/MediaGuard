@@ -6,11 +6,6 @@ export type Status = {
     gateway: string;
     guild_count: number | null;
   };
-  detections: {
-    audio_blocked: number;
-    recent_detection_at: string | null;
-  };
-  detection_retention_days: number;
 };
 
 export type ActivityEvent = {
@@ -52,24 +47,4 @@ export type EmbedRule = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
-};
-
-export type Detection = {
-  at: string;
-  guild_id: string;
-  guild_name: string | null;
-  channel_id: string;
-  channel_name: string | null;
-  message_id: string;
-  author_id: string;
-  author_name: string | null;
-  media_type: string;
-  detection_kind: "audio" | "embed_phrase";
-  rule_id: string | null;
-  rule_name: string | null;
-  source: "direct" | "forward" | "embed" | "forwarded_embed";
-  original_filename: string | null;
-  deletion: string;
-  deleted_at: string | null;
-  notification: string;
 };

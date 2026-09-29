@@ -72,6 +72,26 @@ def handle(runtime, message, bot_id=99):
     return asyncio.run(runtime.discord.handle_message(message, bot_id))
 
 
+def assert_no_history(runtime):
+    with runtime.database.connect() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='enforcement_events'"
+        ).fetchone() is None
+
+
+def test_duplicate_guard_is_bounded_and_expires(tmp_path, monkeypatch):
+    app = setup(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr("mediaguard.discord_service.time.monotonic", lambda: clock[0])
+    for message_id in range(4097):
+        assert app.discord._reserve_attempt(message_id)
+    assert len(app.discord._attempted_messages) == 4096
+    assert not app.discord._reserve_attempt(4096)
+    clock[0] += 301
+    assert app.discord._reserve_attempt(4096)
+    assert len(app.discord._attempted_messages) == 1
+
+
 @pytest.mark.parametrize("items,expected,deletes", [
     ((attachment(),), [Status.SAFE], 0),
     ((attachment("song.mp3", MP3),), [Status.MATCH], 1),
@@ -85,20 +105,17 @@ def test_precedence_and_single_delete(tmp_path, items, expected, deletes):
     message = Message(*items)
     assert [item.status for item in handle(runtime, message)] == expected
     assert message.deletes == deletes
-    assert len(runtime.database.recent_enforcements()) == deletes
+    assert_no_history(runtime)
 
 
-def test_forward_and_duplicate_across_restart(tmp_path):
+def test_forward_and_duplicate_within_runtime(tmp_path):
     runtime = setup(tmp_path)
     message = Message(attachment("song.mp3", MP3), forward=True)
     assert handle(runtime, message)[0].source == "forward"
     assert message.deletes == 1
     handle(runtime, message)
     assert message.deletes == 1
-    restarted = setup(tmp_path)
-    handle(restarted, message)
-    assert message.deletes == 1
-    assert restarted.database.recent_enforcements()[0]["source"] == "forward"
+    assert_no_history(runtime)
 
 
 def test_discord_hook_enforces_without_network(tmp_path):
@@ -127,6 +144,10 @@ def test_forward_notification_and_multiple_matches(tmp_path):
     embed = channel.sent[0]["embed"]
     assert embed.fields[4].value == "Forwarded message"
     assert embed.fields[5].value == "Message deleted"
+    assert embed.fields[0].value == "<@10>"
+    assert embed.fields[6].value.startswith("<t:")
+    assert embed.fields[6].value.endswith(":F>")
+    assert channel.sent[0]["allowed_mentions"].users is False
     assert "second.wav" not in str(embed.to_dict())
 
 
@@ -171,7 +192,8 @@ def test_embed_bounds_long_names_and_uses_known_avatar():
     assert len(embed.author.name) <= 200
     assert len(embed.fields[2].value) <= 200
     assert embed.author.icon_url.endswith("synthetic.png")
-    assert embed.fields[6].value == "28 September 2026 20:47:31 UTC"
+    assert embed.fields[6].value == "<t:1790628451:F>"
+    assert " UTC" not in embed.fields[6].value
     assert "🎵" not in str(embed.to_dict())
     emoji_filename = InspectionResult(Status.MATCH, "audio_signature", "direct", filename="song🎵.mp3", media_type="mp3")
     assert "🎵" not in str(blocked_audio_embed(message, emoji_filename,
@@ -183,7 +205,7 @@ def test_disabled_notifications_and_unavailable_never_send(tmp_path):
     runtime = setup(tmp_path, detection_channel_id=40)
     handle(runtime, Message(attachment("song.mp3", MP3), detection_channel=channel))
     assert channel.sent == []
-    assert runtime.database.recent_enforcements()[0]["notification"] == "not_attempted"
+    assert_no_history(runtime)
     enabled = setup(tmp_path / "enabled", notifications=True, detection_channel_id=40)
     uncertain = Message(attachment("song.mp3", None, size=100), detection_channel=channel)
     assert handle(enabled, uncertain)[0].status is Status.UNAVAILABLE
@@ -194,13 +216,11 @@ def test_disabled_notifications_and_unavailable_never_send(tmp_path):
 def test_detection_notification_success_and_failure(tmp_path):
     detection_channel = Channel(40)
     runtime = setup(tmp_path, notifications=True, detection_channel_id=40)
-    message = Message(attachment("secret-song.mp3", MP3), detection_channel=detection_channel)
+    message = Message(attachment("secret-song.mp3", MP3), detection_channel=detection_channel,
+                      author_id=123456789012345678)
+    message.author.display_name = "Fixture Listener"
     handle(runtime, message)
-    event = runtime.database.recent_enforcements()[0]
-    assert event["deletion"] == "succeeded"
-    assert event["notification"] == "succeeded"
-    assert event["media_type"] == "mp3"
-    assert event["mode"] == "DELETE"
+    assert_no_history(runtime)
     assert len(detection_channel.sent) == 1
     assert "private body" not in str(detection_channel.sent)
     embed = detection_channel.sent[0]["embed"]
@@ -209,19 +229,24 @@ def test_detection_notification_success_and_failure(tmp_path):
     assert embed.fields[2].name == "File"
     assert embed.fields[2].value == "secret-song.mp3"
     assert embed.fields[4].value == "Direct attachment"
-    assert embed.fields[0].value.endswith("\n10")
+    assert embed.fields[0].value == "<@123456789012345678>"
+    assert "Fixture Listener" not in embed.fields[0].value
     assert embed.fields[1].value == "<#20>"
     assert embed.fields[6].name == "Deleted at"
-    assert event["deleted_at"].endswith("+00:00")
-    assert not detection_channel.sent[0]["allowed_mentions"].everyone
+    assert embed.timestamp.utcoffset().total_seconds() == 0
+    assert embed.fields[6].value == f"<t:{int(embed.timestamp.timestamp())}:F>"
+    assert " UTC" not in embed.fields[6].value
+    allowed = detection_channel.sent[0]["allowed_mentions"]
+    assert allowed.users is False
+    assert allowed.everyone is False
+    assert allowed.roles is False
 
     detection_channel.fail_send = True
     second = Message(attachment("song.mp3", MP3), detection_channel=detection_channel, message_id=31)
     handle(runtime, second)
-    event = runtime.database.recent_enforcements()[0]
-    assert event["deletion"] == "succeeded"
-    assert event["notification"] == "failed_or_unknown"
     assert second.deletes == 1
+    assert "detection_notification_failed" in str(runtime.activity.recent())
+    assert_no_history(runtime)
 
 
 def test_failed_delete_and_missing_permissions(tmp_path):
@@ -229,16 +254,15 @@ def test_failed_delete_and_missing_permissions(tmp_path):
     runtime = setup(tmp_path, notifications=True, detection_channel_id=40)
     failed = Message(attachment("song.mp3", MP3), fail_delete=True, detection_channel=detection_channel)
     handle(runtime, failed)
-    assert runtime.database.recent_enforcements()[0]["deletion"] == "failed_or_unknown"
-    assert runtime.database.recent_enforcements()[0]["deleted_at"] is None
-    assert "message_removed" not in str(runtime.activity.recent())
+    assert "delete_failed" in str(runtime.activity.recent())
     assert detection_channel.sent == []
     handle(runtime, failed)
     assert failed.deletes == 1
     denied = Message(attachment("song.mp3", MP3), channel=Channel(20, manage=False), message_id=31)
     handle(runtime, denied)
     assert denied.deletes == 0
-    assert runtime.database.recent_enforcements()[0]["deletion"] == "not_attempted"
+    assert "delete_permission_missing" in str(runtime.activity.recent())
+    assert_no_history(runtime)
 
 
 @pytest.mark.parametrize("detection_channel,detection_channel_id", [(None, None), (Channel(40, send=False), 40)])
@@ -247,8 +271,8 @@ def test_notification_preflight(tmp_path, detection_channel, detection_channel_i
     message = Message(attachment("song.mp3", MP3), detection_channel=detection_channel)
     handle(runtime, message)
     assert message.deletes == 1
-    assert runtime.database.recent_enforcements()[0]["deletion"] == "succeeded"
-    assert runtime.database.recent_enforcements()[0]["notification"] == "failed"
+    assert "detection_notification_unavailable" in str(runtime.activity.recent())
+    assert_no_history(runtime)
 
 
 def test_filter_disabled_own_dm_and_privacy(tmp_path):
@@ -259,12 +283,12 @@ def test_filter_disabled_own_dm_and_privacy(tmp_path):
     dm = Message(attachment("song.mp3", MP3), channel=Channel(21), guild=False)
     assert handle(runtime, own) == ()
     assert handle(runtime, dm) == ()
-    assert runtime.database.recent_enforcements() == []
+    assert_no_history(runtime)
     enabled = Message(attachment("private-name.mp3", MP3), channel=Channel(21), content="private body")
     handle(runtime, enabled)
     data = b"".join(path.read_bytes() for path in (tmp_path / "runtime").glob("mediaguard.sqlite3*"))
     assert b"private body" not in data
-    assert runtime.database.recent_enforcements()[0]["original_filename"] == "private-name.mp3"
+    assert b"private-name.mp3" not in data
     assert b"cdn.discordapp.com" not in data
     assert MP3 not in data
     disabled = setup(tmp_path / "disabled", enabled=False)
@@ -282,7 +306,36 @@ def test_config_and_read_only_api(tmp_path):
     runtime.start()
     with TestClient(create_app(runtime)) as client:
         assert client.get("/api/protection").json()["channel_ids"] == ["20"]
-        assert client.get("/api/detections").json() == []
+        assert client.get("/api/detections").status_code == 404
     path.write_text(json.dumps({"protection": {"notifications_enabled": "INVALID"}}), encoding="utf-8")
     with pytest.raises(ValueError):
         load(tmp_path)
+
+
+def test_inspection_never_writes_media_files(tmp_path):
+    cases = (
+        ("safe", attachment(), False, False),
+        ("match", attachment("song.mp3", MP3), False, False),
+        ("delete-failed", attachment("song.mp3", MP3), True, False),
+        ("notify-failed", attachment("song.mp3", MP3), False, True),
+    )
+    for name, item, fail_delete, fail_send in cases:
+        root = tmp_path / name
+        destination = Channel(40, fail_send=fail_send)
+        app = setup(root, notifications=True, detection_channel_id=40)
+        source = Message(item, detection_channel=destination, fail_delete=fail_delete)
+        handle(app, source)
+        assert_no_history(app)
+        assert all(path.name.startswith("mediaguard.sqlite3") for path in (root / "runtime").iterdir())
+
+    root = tmp_path / "exception"
+    app = setup(root)
+
+    async def broken_fetch(_):
+        raise RuntimeError("inspection failed")
+
+    app.discord.fetch_prefix = broken_fetch
+    with pytest.raises(RuntimeError):
+        handle(app, Message(attachment("song.mp3", MP3)))
+    assert_no_history(app)
+    assert all(path.name.startswith("mediaguard.sqlite3") for path in (root / "runtime").iterdir())

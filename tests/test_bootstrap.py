@@ -29,7 +29,7 @@ def test_migration_idempotent(tmp_path):
     db.migrate()
     db.migrate()
     with db.connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 10
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_attachment_size_configuration(tmp_path):
@@ -42,6 +42,17 @@ def test_attachment_size_configuration(tmp_path):
     path.write_text(json.dumps({"discord": {"max_attachment_bytes": 0}}), encoding="utf-8")
     with pytest.raises(ValueError):
         load(tmp_path)
+
+
+def test_legacy_retention_setting_is_ignored(tmp_path):
+    import json
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"detection_retention_days": 90, "protection": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    assert load(tmp_path).protection_enabled is True
+    assert not hasattr(load(tmp_path), "detection_retention_days")
 
 
 class FakeClient:

@@ -179,9 +179,9 @@ def test_no_body_or_attachment_content_is_logged_or_persisted(tmp_path):
     activity = str(runtime.activity.recent())
     assert "sensitive-name" not in activity
     assert "private phrase" not in activity
-    assert "media_match_observed" in activity
+    assert "private-name" not in activity
     with runtime.database.connect() as connection:
-        assert {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {"schema_migrations", "enforcement_events", "guild_protection", "blocked_embed_phrases"}
+        assert {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {"schema_migrations", "guild_protection", "blocked_embed_phrases"}
     runtime.stop()
 
 
@@ -207,7 +207,7 @@ def test_discord_on_message_hook_uses_existing_client_without_network():
 
     asyncio.run(run())
     assert len(fetched) == 1
-    assert bot.activity.recent()[0]["code"] == "media_match_observed"
+    assert bot.activity.recent() == []
 
 
 def test_unexpected_intake_error_records_only_a_code():

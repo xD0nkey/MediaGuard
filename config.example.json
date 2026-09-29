@@ -1,6 +1,5 @@
 {
   "discord": {"enabled": false, "max_attachment_bytes": 26214400},
   "protection": {"enabled": false, "channel_ids": [], "notifications_enabled": false, "detection_channel_id": null},
-  "detection_retention_days": 90,
   "operator": {"host": "127.0.0.1", "port": 8765}
 }
