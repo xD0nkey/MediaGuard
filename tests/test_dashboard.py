@@ -17,10 +17,10 @@ GUILDS = [
         {"id": "11", "name": "general", "can_protect": True, "can_notify": True},
         {"id": "12", "name": "uploads", "can_protect": True, "can_notify": False},
         {"id": "13", "name": "notice", "can_protect": False, "can_notify": True},
-    ]},
+    ], "roles": [{"id": "70", "name": "Moderators"}, {"id": "71", "name": "DJs"}]},
     {"id": "2", "name": "Two", "channels": [
         {"id": "21", "name": "other", "can_protect": True, "can_notify": True},
-    ]},
+    ], "roles": [{"id": "72", "name": "Elsewhere"}]},
 ]
 
 
@@ -33,7 +33,7 @@ def runtime(tmp_path, config=None):
 
 def payload(**changes):
     data = {"guild_id": "1", "enabled": True, "channel_ids": [],
-            "notifications_enabled": False, "detection_channel_id": None}
+            "notifications_enabled": False, "detection_channel_id": None, "exempt_role_ids": []}
     data.update(changes)
     return data
 
@@ -53,13 +53,19 @@ def test_inventory_uses_existing_guild_and_channel_permissions(tmp_path):
     ]
     forum = SimpleNamespace(id=14, name="clips", permissions_for=lambda _: SimpleNamespace(
         view_channel=True, manage_messages=True, send_messages=True))
-    guild = SimpleNamespace(id=1, name="One", me=object(), text_channels=channels, forums=[forum])
+    roles = [
+        SimpleNamespace(id=1, name="@everyone", managed=False, is_default=lambda: True),
+        SimpleNamespace(id=70, name="Moderators", managed=False, is_default=lambda: False),
+        SimpleNamespace(id=73, name="Bot integration", managed=True, is_default=lambda: False),
+    ]
+    guild = SimpleNamespace(id=1, name="One", me=object(), text_channels=channels, forums=[forum], roles=roles)
     result = asyncio.run(app.discord._inventory(SimpleNamespace(guilds=[guild])))
     assert result[0]["channels"][0]["can_protect"]
     assert result[0]["channels"][0]["can_notify"]
     assert not result[0]["channels"][1]["can_protect"]
     assert not result[0]["channels"][1]["can_notify"]
     assert result[0]["channels"][2] == {"id": "14", "name": "clips", "can_protect": True, "can_notify": False}
+    assert result[0]["roles"] == [{"id": "70", "name": "Moderators"}]
 
 
 def test_protection_save_reload_and_guild_scope(tmp_path):
@@ -201,3 +207,13 @@ def test_existing_history_is_left_untouched_during_config_migration(tmp_path):
     assert message.deletes == 1
     with database.connect() as connection:
         assert connection.execute("SELECT * FROM enforcement_events").fetchall() == [("30", "legacy.mp3")]
+
+
+def test_exempt_roles_are_saved_and_validated(tmp_path):
+    app = runtime(tmp_path)
+    with TestClient(create_app(app)) as client:
+        for roles in (["72"], ["999"], ["70", "70"], ["abc"], "70", [str(n) for n in range(100, 151)]):
+            assert save(client, payload(exempt_role_ids=roles)).status_code == 422
+        assert client.get("/api/protection", params={"guild_id": "1"}).json()["exempt_role_ids"] == []
+        assert save(client, payload(exempt_role_ids=["70", "71"])).json()["exempt_role_ids"] == ["70", "71"]
+    assert runtime(tmp_path).database.protection_for(1, Config())["exempt_role_ids"] == (70, 71)

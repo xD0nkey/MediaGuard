@@ -23,6 +23,10 @@ export type Guild = {
     can_protect: boolean;
     can_notify: boolean;
   }[];
+  roles: {
+    id: string;
+    name: string;
+  }[];
 };
 
 export type Protection = {
@@ -31,12 +35,17 @@ export type Protection = {
   channel_ids: string[];
   notifications_enabled: boolean;
   detection_channel_id: string | null;
+  exempt_role_ids: string[];
   media_types: string[];
 };
 
 export type ProtectionDraft = Pick<
   Protection,
-  "enabled" | "channel_ids" | "notifications_enabled" | "detection_channel_id"
+  | "enabled"
+  | "channel_ids"
+  | "notifications_enabled"
+  | "detection_channel_id"
+  | "exempt_role_ids"
 >;
 
 export type EmbedRule = {

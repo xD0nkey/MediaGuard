@@ -334,6 +334,44 @@ def test_thread_delete_permission_uses_thread(tmp_path):
     assert "delete_permission_missing" in str(runtime.activity.recent())
 
 
+def exempt_setup(tmp_path):
+    runtime = setup(tmp_path)
+    runtime.database.save_protection(1, True, [], False, None, [70])
+    fetched = []
+
+    async def fetch(item, start=0):
+        fetched.append(item)
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    return runtime, fetched
+
+
+def with_roles(message, *role_ids):
+    message.author.roles = [SimpleNamespace(id=role_id) for role_id in role_ids]
+    return message
+
+
+def test_exempt_author_audio_is_not_fetched_or_deleted(tmp_path):
+    runtime, fetched = exempt_setup(tmp_path)
+    direct = with_roles(Message(attachment("song.mp3", MP3)), 5, 70)
+    forwarded = with_roles(Message(attachment("song.mp3", MP3), forward=True, message_id=31), 70)
+    assert handle(runtime, direct) == ()
+    assert handle(runtime, forwarded) == ()
+    assert direct.deletes == forwarded.deletes == 0
+    assert fetched == []
+
+
+def test_non_exempt_author_audio_is_still_deleted(tmp_path):
+    runtime, fetched = exempt_setup(tmp_path)
+    member = with_roles(Message(attachment("song.mp3", MP3)), 5)
+    webhook = Message(attachment("song.mp3", MP3), message_id=31)
+    handle(runtime, member)
+    handle(runtime, webhook)
+    assert member.deletes == webhook.deletes == 1
+    assert len(fetched) == 2
+
+
 def test_config_and_read_only_api(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"protection": {"enabled": True, "channel_ids": [20], "notifications_enabled": True, "detection_channel_id": 40}}), encoding="utf-8")

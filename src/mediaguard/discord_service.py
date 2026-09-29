@@ -24,6 +24,11 @@ def _is_protected_channel(channel, protected_ids):
     return channel.id in protected_ids or getattr(channel, "parent_id", None) in protected_ids
 
 
+def _has_exempt_role(author, exempt_role_ids):
+    roles = getattr(author, "roles", None)
+    return bool(exempt_role_ids and roles and any(role.id in exempt_role_ids for role in roles))
+
+
 def make_client(service):
     import discord
     intents = discord.Intents.none()
@@ -118,7 +123,9 @@ class DiscordService:
                                  "can_protect": visible and bool(permissions.manage_messages),
                                  "can_notify": visible and bool(permissions.send_messages)
                                  and channel.id not in forum_ids})
-            guilds.append({"id": str(guild.id), "name": guild.name, "channels": channels})
+            roles = [{"id": str(role.id), "name": role.name} for role in guild.roles
+                     if not role.is_default() and not role.managed]
+            guilds.append({"id": str(guild.id), "name": guild.name, "channels": channels, "roles": roles})
         return guilds
 
     def inventory(self):
@@ -147,12 +154,13 @@ class DiscordService:
         self.activity.record("Discord", "gateway_resumed")
 
     async def inspect_message(
-        self, message, bot_user_id=None, embed_rules=(), embed_only=False
+        self, message, bot_user_id=None, embed_rules=(), embed_only=False, inspect_audio=True
     ) -> tuple[InspectionResult, ...]:
         if message.guild is None or (bot_user_id is not None and message.author.id == bot_user_id):
             return ()
 
-        attachments = [] if embed_only else [(attachment, "direct") for attachment in message.attachments]
+        skip_attachments = embed_only or not inspect_audio
+        attachments = [] if skip_attachments else [(attachment, "direct") for attachment in message.attachments]
         results = []
         forwarded_embeds = []
         reference = getattr(message, "reference", None)
@@ -163,10 +171,10 @@ class DiscordService:
                     InspectionResult(Status.UNAVAILABLE, "forward_snapshot_unavailable", "forward")
                 )
             for snapshot in snapshots:
-                if not embed_only:
+                if not skip_attachments:
                     attachments.extend((attachment, "forward") for attachment in snapshot.attachments)
                 forwarded_embeds.extend(snapshot.embeds)
-                if not snapshot.attachments and not snapshot.embeds:
+                if not skip_attachments and not snapshot.attachments and not snapshot.embeds:
                     results.append(
                         InspectionResult(Status.UNAVAILABLE, "forward_media_metadata_unavailable", "forward")
                     )
@@ -196,7 +204,8 @@ class DiscordService:
         if settings and settings["channel_ids"] and not _is_protected_channel(message.channel, settings["channel_ids"]):
             return ()
         rules = self.database.embed_rules(message.guild.id, enabled_only=True) if settings and settings["enabled"] and bot_user_id is not None else ()
-        results = await self.inspect_message(message, bot_user_id, rules, embed_only)
+        exempt = bool(settings) and _has_exempt_role(message.author, settings["exempt_role_ids"])
+        results = await self.inspect_message(message, bot_user_id, rules, embed_only, not exempt)
         if not settings or not settings["enabled"]:
             return results
         match = next((result for result in results if result.status is Status.MATCH), None)

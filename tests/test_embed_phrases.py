@@ -332,3 +332,14 @@ def test_no_external_http_for_embeds(tmp_path, monkeypatch):
     message = message_with_embed(embed(description="The Fate of Opalite"))
     handle(runtime, message)
     assert message.deletes == 1
+
+
+def test_exempt_author_blocked_embed_phrase_is_still_deleted(tmp_path):
+    runtime = setup(tmp_path)
+    runtime.database.save_protection(1, True, [], False, None, [70])
+    add_rule(runtime)
+    message = message_with_embed(embed(title="The Fate of Opalite"))
+    message.author.roles = [SimpleNamespace(id=70)]
+    result, = handle(runtime, message)
+    assert result.reason == "blocked_embed_phrase"
+    assert message.deletes == 1

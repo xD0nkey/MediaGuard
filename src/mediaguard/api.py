@@ -24,6 +24,7 @@ def _protection_payload(settings):
             "channel_ids": [str(value) for value in settings["channel_ids"]],
             "notifications_enabled": settings["notifications_enabled"],
             "detection_channel_id": str(settings["detection_channel_id"]) if settings["detection_channel_id"] else None,
+            "exempt_role_ids": [str(value) for value in settings["exempt_role_ids"]],
             "media_types": MEDIA_TYPES}
 
 
@@ -121,7 +122,8 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
             data = await request.json()
         except ValueError:
             raise HTTPException(422, "Invalid configuration") from None
-        if not isinstance(data, dict) or set(data) != {"guild_id", "enabled", "channel_ids", "notifications_enabled", "detection_channel_id"}:
+        if not isinstance(data, dict) or set(data) != {"guild_id", "enabled", "channel_ids", "notifications_enabled",
+                                                 "detection_channel_id", "exempt_role_ids"}:
             raise HTTPException(422, "Invalid configuration")
         guild_id = _id(data["guild_id"])
         if type(data["enabled"]) is not bool or type(data["notifications_enabled"]) is not bool:
@@ -132,6 +134,12 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         selected = [_id(value) for value in channel_ids]
         if len(selected) != len(set(selected)):
             raise HTTPException(422, "Duplicate protected channel")
+        role_ids = data["exempt_role_ids"]
+        if not isinstance(role_ids, list) or len(role_ids) > 50:
+            raise HTTPException(422, "Invalid exempt roles")
+        exempt_roles = [_id(value) for value in role_ids]
+        if len(exempt_roles) != len(set(exempt_roles)):
+            raise HTTPException(422, "Duplicate exempt role")
         detection_id = _id(data["detection_channel_id"]) if data["detection_channel_id"] is not None else None
         if data["notifications_enabled"] and detection_id is None:
             raise HTTPException(422, "Select a Detection channel")
@@ -147,8 +155,10 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
             raise HTTPException(422, "Protected channel unavailable")
         if detection_id is not None and detection_id not in notification_channels:
             raise HTTPException(422, "Detection channel unavailable")
+        if not set(exempt_roles) <= {int(role["id"]) for role in guild["roles"]}:
+            raise HTTPException(422, "Exempt role unavailable")
         runtime.database.save_protection(guild_id, data["enabled"], selected,
-                                         data["notifications_enabled"], detection_id)
+                                         data["notifications_enabled"], detection_id, exempt_roles)
         runtime.activity.record("System", "protection_configuration_saved")
         return _protection_payload(runtime.database.protection_for(guild_id, runtime.config))
 

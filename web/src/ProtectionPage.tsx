@@ -18,7 +18,16 @@ function draftOf(value: Protection): ProtectionDraft {
     channel_ids: value.channel_ids,
     notifications_enabled: value.notifications_enabled,
     detection_channel_id: value.detection_channel_id,
+    exempt_role_ids: value.exempt_role_ids,
   };
+}
+
+function comparable(value: ProtectionDraft) {
+  return JSON.stringify({
+    ...value,
+    channel_ids: [...value.channel_ids].sort(),
+    exempt_role_ids: [...value.exempt_role_ids].sort(),
+  });
 }
 
 export default function ProtectionPage({
@@ -110,14 +119,11 @@ export default function ProtectionPage({
     draft &&
     saved &&
     (channelMode !== savedMode ||
-      JSON.stringify({
-        ...draft,
-        channel_ids: [...draft.channel_ids].sort(),
-      }) !==
-        JSON.stringify({
-          ...draftOf(saved),
-          channel_ids: [...saved.channel_ids].sort(),
-        })),
+      comparable(draft) !== comparable(draftOf(saved))),
+  );
+  const exemptRoles = guild?.roles ?? [];
+  const missingRoles = draft?.exempt_role_ids.some(
+    (id) => !exemptRoles.some((role) => role.id === id),
   );
   const missingChannels = draft?.channel_ids.some(
     (id) => !protectedChannels.some((channel) => channel.id === id),
@@ -336,6 +342,66 @@ export default function ProtectionPage({
                     )}
                   </div>
                 )}
+                <div className="setting-row channel-setting">
+                  <div>
+                    <strong id="exempt-roles-label">
+                      Exempt roles (audio only)
+                    </strong>
+                    <p>
+                      Audio from members with these roles is not deleted.
+                      Blocked embed phrases still apply.
+                    </p>
+                  </div>
+                </div>
+                <div
+                  className="channel-options"
+                  role="group"
+                  aria-labelledby="exempt-roles-label"
+                >
+                  {exemptRoles.length ? (
+                    exemptRoles.map((role) => (
+                      <label key={role.id}>
+                        <input
+                          type="checkbox"
+                          checked={draft.exempt_role_ids.includes(role.id)}
+                          disabled={!backendAvailable}
+                          onChange={(event) =>
+                            update({
+                              exempt_role_ids: event.target.checked
+                                ? [...draft.exempt_role_ids, role.id]
+                                : draft.exempt_role_ids.filter(
+                                    (id) => id !== role.id,
+                                  ),
+                            })
+                          }
+                        />
+                        <span>@{role.name}</span>
+                      </label>
+                    ))
+                  ) : (
+                    <p>No roles are available in this server.</p>
+                  )}
+                  {missingRoles && (
+                    <p className="field-error">
+                      A saved role no longer exists.{" "}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          update({
+                            exempt_role_ids: draft.exempt_role_ids.filter(
+                              (id) =>
+                                exemptRoles.some((role) => role.id === id),
+                            ),
+                          })
+                        }
+                      >
+                        Remove unavailable roles
+                      </Button>
+                    </p>
+                  )}
+                </div>
               </section>
 
               <section className="form-section">
@@ -425,6 +491,7 @@ export default function ProtectionPage({
                   !backendAvailable ||
                   saving ||
                   !!missingChannels ||
+                  !!missingRoles ||
                   !!missingDetectionChannel
                 }
               >
