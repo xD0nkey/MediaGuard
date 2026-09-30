@@ -34,7 +34,7 @@ def runtime(tmp_path, config=None):
 def payload(**changes):
     data = {"guild_id": "1", "enabled": True, "channel_ids": [],
             "notifications_enabled": False, "detection_channel_id": None, "exempt_role_ids": [],
-            "unresolved_action": "allow"}
+            "unresolved_action": "allow", "moderation_mode": "auto_delete"}
     data.update(changes)
     return data
 
@@ -245,3 +245,55 @@ def test_unresolved_action_migration_defaults_existing_rows_to_allow(tmp_path):
                            "detection_channel_id, updated_at) VALUES ('1', 1, '[]', 0, NULL, 'x')")
     database.migrate()
     assert database.protection_for(1, Config())["unresolved_action"] == "allow"
+    assert database.protection_for(1, Config())["moderation_mode"] == "auto_delete"
+
+
+def test_migration_repairs_recorded_versions_with_missing_protection_columns(tmp_path):
+    path = tmp_path / "runtime" / "mediaguard.sqlite3"
+    database = Database(path)
+    with database.connect() as connection:
+        connection.execute(MIGRATIONS[0][1])
+        for version, sql in MIGRATIONS[1:3]:
+            connection.execute(sql)
+        connection.executemany(
+            "INSERT INTO schema_migrations VALUES (?, datetime('now'))",
+            [(version,) for version in (1, 6, 7, 8, 9, 10)],
+        )
+        connection.execute("INSERT INTO guild_protection VALUES ('1', 1, '[]', 1, '13', 'x')")
+
+    database.migrate()
+    database.migrate()
+    settings = database.protection_for(1, Config())
+    assert settings["enabled"] is True
+    assert settings["detection_channel_id"] == 13
+    assert settings["exempt_role_ids"] == ()
+    assert settings["unresolved_action"] == "allow"
+    assert settings["moderation_mode"] == "auto_delete"
+
+
+def test_moderation_mode_api_validation_and_persistence(tmp_path):
+    app = runtime(tmp_path)
+    with TestClient(create_app(app)) as client:
+        assert client.get("/api/protection", params={"guild_id": "1"}).json()["moderation_mode"] == "auto_delete"
+        for mode in ("delete", "WARN_ONLY", "", None, True, ["warn_only"]):
+            assert save(client, payload(moderation_mode=mode)).status_code == 422
+        missing = payload()
+        del missing["moderation_mode"]
+        assert save(client, missing).status_code == 422
+        assert save(client, payload(moderation_mode="warn_only")).status_code == 422
+        saved = save(client, payload(moderation_mode="warn_only", notifications_enabled=True,
+                                     detection_channel_id="13"))
+        assert saved.status_code == 200
+        assert saved.json()["moderation_mode"] == "warn_only"
+        assert client.get("/api/protection", params={"guild_id": "2"}).json()["moderation_mode"] == "auto_delete"
+    restarted = runtime(tmp_path)
+    assert restarted.database.protection_for(1, Config())["moderation_mode"] == "warn_only"
+    with TestClient(create_app(restarted)) as client:
+        assert save(client, payload(moderation_mode="auto_delete")).json()["moderation_mode"] == "auto_delete"
+
+
+def test_new_and_existing_guild_settings_default_to_auto_delete(tmp_path):
+    app = runtime(tmp_path)
+    assert app.database.protection_for(1, Config())["moderation_mode"] == "auto_delete"
+    app.database.save_protection(1, True, [], False, None)
+    assert runtime(tmp_path).database.protection_for(1, Config())["moderation_mode"] == "auto_delete"

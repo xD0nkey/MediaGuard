@@ -30,6 +30,7 @@ export type Guild = {
 };
 
 export type UnresolvedAction = "allow" | "report";
+export type ModerationMode = "warn_only" | "auto_delete";
 
 export type Protection = {
   enabled: boolean;
@@ -39,6 +40,7 @@ export type Protection = {
   detection_channel_id: string | null;
   exempt_role_ids: string[];
   unresolved_action: UnresolvedAction;
+  moderation_mode: ModerationMode;
   media_types: string[];
 };
 
@@ -50,6 +52,7 @@ export type ProtectionDraft = Pick<
   | "detection_channel_id"
   | "exempt_role_ids"
   | "unresolved_action"
+  | "moderation_mode"
 >;
 
 export type EmbedRule = {

@@ -1,23 +1,19 @@
 from pathlib import Path
-import sqlite3
-import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from urllib.parse import urlsplit
 from fastapi.staticfiles import StaticFiles
 from .runtime import Runtime
-from .embed_phrases import normalize
+from .configuration import (ConfigurationError, delete_phrase, discord_id,
+                            save_phrase, save_protection as save_guild_protection)
 
 
 MEDIA_TYPES = ["MP3", "WAV", "FLAC", "Ogg Opus", "Ogg Vorbis", "M4A"]
-UNRESOLVED_ACTIONS = {"allow", "report"}
-
-
 def _id(value):
-    if (not isinstance(value, str) or not value.isascii() or not value.isdecimal()
-            or len(value) > 20 or not 0 < int(value) <= 2**64 - 1):
-        raise HTTPException(422, "Invalid Discord ID")
-    return int(value)
+    try:
+        return discord_id(value)
+    except ConfigurationError as error:
+        raise HTTPException(422, str(error)) from None
 
 
 def _protection_payload(settings):
@@ -27,6 +23,7 @@ def _protection_payload(settings):
             "detection_channel_id": str(settings["detection_channel_id"]) if settings["detection_channel_id"] else None,
             "exempt_role_ids": [str(value) for value in settings["exempt_role_ids"]],
             "unresolved_action": settings["unresolved_action"],
+            "moderation_mode": settings["moderation_mode"],
             "media_types": MEDIA_TYPES}
 
 
@@ -67,17 +64,7 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
         if not isinstance(data, dict) or set(data) != {"guild_id", "name", "phrase", "enabled"}:
             raise HTTPException(422, "Invalid rule")
         guild = connected_guild(data["guild_id"])
-        name, phrase, enabled = data["name"], data["phrase"], data["enabled"]
-        if (not isinstance(name, str) or not 1 <= len(name.strip()) <= 80
-                or not isinstance(phrase, str) or not 1 <= len(phrase.strip()) <= 160
-                or type(enabled) is not bool):
-            raise HTTPException(422, "Invalid rule")
-        name, phrase = name.strip(), phrase.strip()
-        normalized = normalize(phrase)
-        if (not normalized or not any(char.isalnum() for char in normalized)
-                or "http://" in normalized or "https://" in normalized):
-            raise HTTPException(422, "Invalid blocked phrase")
-        return guild["id"], name, phrase, normalized, enabled
+        return guild["id"], data["name"], data["phrase"], data["enabled"]
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -124,48 +111,21 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
             data = await request.json()
         except ValueError:
             raise HTTPException(422, "Invalid configuration") from None
-        if not isinstance(data, dict) or set(data) != {"guild_id", "enabled", "channel_ids", "notifications_enabled",
-                                                 "detection_channel_id", "exempt_role_ids", "unresolved_action"}:
+        if not isinstance(data, dict) or "guild_id" not in data:
             raise HTTPException(422, "Invalid configuration")
         guild_id = _id(data["guild_id"])
-        if type(data["enabled"]) is not bool or type(data["notifications_enabled"]) is not bool:
-            raise HTTPException(422, "Invalid protection state")
-        channel_ids = data["channel_ids"]
-        if not isinstance(channel_ids, list) or len(channel_ids) > 500:
-            raise HTTPException(422, "Invalid protected channels")
-        selected = [_id(value) for value in channel_ids]
-        if len(selected) != len(set(selected)):
-            raise HTTPException(422, "Duplicate protected channel")
-        if not isinstance(data["unresolved_action"], str) or data["unresolved_action"] not in UNRESOLVED_ACTIONS:
-            raise HTTPException(422, "Invalid unresolved action")
-        role_ids = data["exempt_role_ids"]
-        if not isinstance(role_ids, list) or len(role_ids) > 50:
-            raise HTTPException(422, "Invalid exempt roles")
-        exempt_roles = [_id(value) for value in role_ids]
-        if len(exempt_roles) != len(set(exempt_roles)):
-            raise HTTPException(422, "Duplicate exempt role")
-        detection_id = _id(data["detection_channel_id"]) if data["detection_channel_id"] is not None else None
-        if data["notifications_enabled"] and detection_id is None:
-            raise HTTPException(422, "Select a Detection channel")
         try:
             guild = next((item for item in runtime.discord.inventory() if item["id"] == str(guild_id)), None)
         except Exception:
             raise HTTPException(503, "Discord channel list unavailable") from None
         if guild is None:
             raise HTTPException(422, "Guild unavailable")
-        protected = {int(channel["id"]) for channel in guild["channels"] if channel["can_protect"]}
-        notification_channels = {int(channel["id"]) for channel in guild["channels"] if channel["can_notify"]}
-        if not set(selected) <= protected or (data["enabled"] and not protected and not selected):
-            raise HTTPException(422, "Protected channel unavailable")
-        if detection_id is not None and detection_id not in notification_channels:
-            raise HTTPException(422, "Detection channel unavailable")
-        if not set(exempt_roles) <= {int(role["id"]) for role in guild["roles"]}:
-            raise HTTPException(422, "Exempt role unavailable")
-        runtime.database.save_protection(guild_id, data["enabled"], selected,
-                                         data["notifications_enabled"], detection_id, exempt_roles,
-                                         data["unresolved_action"])
+        try:
+            settings = save_guild_protection(runtime.database, runtime.config, guild, data)
+        except ConfigurationError as error:
+            raise HTTPException(422, str(error)) from None
         runtime.activity.record("System", "protection_configuration_saved")
-        return _protection_payload(runtime.database.protection_for(guild_id, runtime.config))
+        return _protection_payload(settings)
 
     @app.get("/api/embed-rules")
     def embed_rules(guild_id: str):
@@ -174,37 +134,34 @@ def create_app(runtime: Runtime, web_dist: Path | None = None):
 
     @app.post("/api/embed-rules")
     async def create_embed_rule(request: Request):
-        guild_id, name, phrase, normalized, enabled = await rule_request(request, "save-embed-rule")
-        rule_id = uuid.uuid4().hex
+        guild_id, name, phrase, enabled = await rule_request(request, "save-embed-rule")
         try:
-            runtime.database.create_embed_rule(guild_id, rule_id, name, phrase, normalized, enabled)
-        except sqlite3.IntegrityError:
-            raise HTTPException(422, "Blocked phrase already exists in this server") from None
-        except ValueError as error:
+            rule = save_phrase(runtime.database, guild_id, name, phrase, enabled)
+        except ConfigurationError as error:
             raise HTTPException(422, str(error)) from None
         runtime.activity.record("System", "embed_rule_saved")
-        return _rule_payload(next(rule for rule in runtime.database.embed_rules(guild_id) if rule["rule_id"] == rule_id))
+        return _rule_payload(rule)
 
     @app.put("/api/embed-rules/{rule_id}")
     async def update_embed_rule(rule_id: str, request: Request):
         rule_id = _rule_id(rule_id)
-        guild_id, name, phrase, normalized, enabled = await rule_request(request, "save-embed-rule")
+        guild_id, name, phrase, enabled = await rule_request(request, "save-embed-rule")
         try:
-            updated = runtime.database.update_embed_rule(guild_id, rule_id, name, phrase, normalized, enabled)
-        except sqlite3.IntegrityError:
-            raise HTTPException(422, "Blocked phrase already exists in this server") from None
-        if not updated:
-            raise HTTPException(404, "Rule unavailable")
+            rule = save_phrase(runtime.database, guild_id, name, phrase, enabled, rule_id)
+        except ConfigurationError as error:
+            raise HTTPException(404 if str(error) == "Rule unavailable" else 422, str(error)) from None
         runtime.activity.record("System", "embed_rule_saved")
-        return _rule_payload(next(rule for rule in runtime.database.embed_rules(guild_id) if rule["rule_id"] == rule_id))
+        return _rule_payload(rule)
 
     @app.delete("/api/embed-rules/{rule_id}")
     def delete_embed_rule(rule_id: str, guild_id: str, request: Request):
         if request.headers.get("x-mediaguard-action") != "delete-embed-rule":
             raise HTTPException(403, "Explicit action required")
         guild_id = connected_guild(guild_id)["id"]
-        if not runtime.database.delete_embed_rule(guild_id, _rule_id(rule_id)):
-            raise HTTPException(404, "Rule unavailable")
+        try:
+            delete_phrase(runtime.database, guild_id, _rule_id(rule_id))
+        except ConfigurationError as error:
+            raise HTTPException(404, str(error)) from None
         runtime.activity.record("System", "embed_rule_deleted")
         return {"deleted": True}
 

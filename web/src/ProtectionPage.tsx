@@ -11,6 +11,7 @@ import {
 import { Switch } from "./components/ui/switch";
 import type {
   Guild,
+  ModerationMode,
   Protection,
   ProtectionDraft,
   UnresolvedAction,
@@ -25,6 +26,7 @@ function draftOf(value: Protection): ProtectionDraft {
     detection_channel_id: value.detection_channel_id,
     exempt_role_ids: value.exempt_role_ids,
     unresolved_action: value.unresolved_action,
+    moderation_mode: value.moderation_mode,
   };
 }
 
@@ -53,6 +55,7 @@ export default function ProtectionPage({
   const [saved, setSaved] = useState<Protection | null>(null);
   const [draft, setDraft] = useState<ProtectionDraft | null>(null);
   const [channelMode, setChannelMode] = useState<"all" | "selected">("all");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{
     kind: "error" | "success";
@@ -107,7 +110,7 @@ export default function ProtectionPage({
           });
       });
     return () => controller.abort();
-  }, [guildId]);
+  }, [guildId, loadAttempt]);
 
   const guild = guilds.find((item) => item.id === guildId);
   useEffect(() => {
@@ -158,6 +161,26 @@ export default function ProtectionPage({
     }
     if (draft.notifications_enabled && !draft.detection_channel_id) {
       setFeedback({ kind: "error", text: "Select a Detection channel." });
+      return;
+    }
+    if (
+      draft.enabled &&
+      draft.moderation_mode === "warn_only" &&
+      !draft.notifications_enabled
+    ) {
+      setFeedback({
+        kind: "error",
+        text: "Warn / Log Only requires Detection notifications.",
+      });
+      return;
+    }
+    if (
+      saved?.moderation_mode === "warn_only" &&
+      draft.moderation_mode === "auto_delete" &&
+      !window.confirm(
+        "Enable Auto Delete? Qualifying messages will begin being deleted automatically.",
+      )
+    ) {
       return;
     }
     setSaving(true);
@@ -238,7 +261,10 @@ export default function ProtectionPage({
           variant="outline"
           size="sm"
           disabled={!backendAvailable}
-          onClick={() => void refreshGuilds()}
+          onClick={() => {
+            void refreshGuilds();
+            setLoadAttempt((attempt) => attempt + 1);
+          }}
         >
           Refresh channels
         </Button>
@@ -250,7 +276,23 @@ export default function ProtectionPage({
           settings remain in place while it is offline.
         </div>
       ) : !draft || !saved ? (
-        <div className="empty-state">Loading protection settings…</div>
+        <div className="empty-state">
+          {feedback?.kind === "error" ? (
+            <>
+              <p>{feedback.text}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+              >
+                Retry
+              </Button>
+            </>
+          ) : (
+            "Loading protection settings…"
+          )}
+        </div>
       ) : (
         <>
           <form onSubmit={(event) => void saveChanges(event)}>
@@ -260,8 +302,9 @@ export default function ProtectionPage({
                 <div className="setting-row">
                   <div>
                     <p>
-                      Delete messages with confirmed audio or a blocked embed
-                      phrase.
+                      {draft.moderation_mode === "warn_only"
+                        ? "Report confirmed audio or blocked embed phrases without deleting messages."
+                        : "Delete messages with confirmed audio or a blocked embed phrase."}
                     </p>
                   </div>
                   <Switch
@@ -410,6 +453,34 @@ export default function ProtectionPage({
                 </div>
                 <div className="setting-row">
                   <div>
+                    <strong>Moderation mode</strong>
+                    <p>
+                      Warn / Log Only reports matches and keeps the original
+                      message. Auto Delete removes matching messages
+                      automatically.
+                    </p>
+                  </div>
+                  <Select
+                    value={draft.moderation_mode}
+                    onValueChange={(value) =>
+                      update({ moderation_mode: value as ModerationMode })
+                    }
+                    disabled={!backendAvailable}
+                  >
+                    <SelectTrigger
+                      aria-label="Moderation mode"
+                      className="w-full min-w-0 sm:w-64"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="warn_only">Warn / Log Only</SelectItem>
+                      <SelectItem value="auto_delete">Auto Delete</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="setting-row">
+                  <div>
                     <strong>When audio can't be confirmed</strong>
                     <p>
                       Inconclusive messages are never deleted. Reporting posts a
@@ -444,8 +515,9 @@ export default function ProtectionPage({
                 <div className="setting-row">
                   <div>
                     <p>
-                      One informational embed after a confirmed deletion.
-                      Detected content is never reposted.
+                      One informational embed after a confirmed detection. Warn
+                      / Log Only requires this to be on. Detected content is
+                      never reposted.
                     </p>
                   </div>
                   <Switch

@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import discord
 from fastapi.testclient import TestClient
 
 from mediaguard.api import create_app
@@ -560,3 +561,150 @@ def test_exempt_forward_without_snapshot_reports_unchecked_phrase(tmp_path):
     assert fetched == []
     assert message.deletes == 0
     assert_unresolved_notice(channel.sent, message.id, "forwarded message content was not available")
+
+
+def mode_setup(tmp_path, mode, *, unresolved_action="allow", exempt_roles=()):
+    runtime = setup(tmp_path)
+    runtime.database.save_protection(1, True, [], True, 40, exempt_roles, unresolved_action, mode)
+    return runtime
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_warn_only_and_auto_delete_have_identical_audio_detection(tmp_path, forward):
+    results = []
+    for mode in ("warn_only", "auto_delete"):
+        channel = Channel(40)
+        runtime = mode_setup(tmp_path / mode, mode)
+        message = Message(attachment("song.mp3", MP3), forward=forward, detection_channel=channel)
+        original_attachment = message.message_snapshots[0].attachments[0] if forward else message.attachments[0]
+        results.append(handle(runtime, message))
+        assert message.deletes == (0 if mode == "warn_only" else 1)
+        assert len(channel.sent) == 1
+        if mode == "warn_only":
+            assert original_attachment.content == MP3
+            assert message.content == "private body"
+            notice = channel.sent[0]["embed"]
+            fields = {field.name: field.value for field in notice.fields}
+            assert notice.title == "Audio file detected"
+            assert fields["Mode"] == "Warn / Log Only"
+            assert fields["Action"] == "No automatic deletion"
+            assert fields["Message"] == f"[Jump to message]({message.jump_url})"
+            assert "Deleted at" not in fields
+            assert "deleted" not in notice.description.lower()
+            assert channel.sent[0]["allowed_mentions"].users is False
+            assert_no_history(runtime)
+            stored = b"".join(path.read_bytes() for path in (tmp_path / mode / "runtime").glob("mediaguard.sqlite3*"))
+            assert MP3 not in stored
+            assert b"private body" not in stored
+            assert b"cdn.discordapp.com" not in stored
+            assert all(path.name.startswith("mediaguard.sqlite3") for path in (tmp_path / mode / "runtime").iterdir())
+        else:
+            assert channel.sent[0]["embed"].title == "Audio file blocked"
+    assert results[0] == results[1]
+    assert results[0][0].status is Status.MATCH
+
+
+def test_warn_only_blocked_phrase_and_mixed_results_never_delete(tmp_path):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, "warn_only")
+    runtime.database.create_embed_rule(1, "rule", "Blocked", "blocked phrase", "blocked phrase", True)
+    message = Message(attachment("bad.mp3", None, size=100), detection_channel=channel)
+    message.embeds = [discord.Embed(title="blocked phrase")]
+    results = handle(runtime, message)
+    assert [result.status for result in results] == [Status.UNAVAILABLE, Status.MATCH]
+    assert results[1].reason == "blocked_embed_phrase"
+    assert message.deletes == 0
+    assert len(channel.sent) == 1
+    assert channel.sent[0]["embed"].title == "Embed phrase detected"
+    assert "No automatic deletion" in str(channel.sent[0]["embed"].to_dict())
+
+
+def test_warn_only_exempt_audio_still_reports_blocked_phrase(tmp_path):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, "warn_only", exempt_roles=(70,))
+    runtime.database.create_embed_rule(1, "rule", "Blocked", "blocked phrase", "blocked phrase", True)
+    fetched = []
+
+    async def fetch(item):
+        fetched.append(item)
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    message = with_roles(Message(attachment("song.mp3", MP3), detection_channel=channel), 70)
+    message.embeds = [discord.Embed(title="blocked phrase")]
+    result, = handle(runtime, message)
+    assert result.reason == "blocked_embed_phrase"
+    assert fetched == []
+    assert message.deletes == 0
+    assert len(channel.sent) == 1
+    assert channel.sent[0]["embed"].title == "Embed phrase detected"
+
+
+def test_warn_only_does_not_need_delete_permission_and_dedupes(tmp_path):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, "warn_only")
+    message = Message(attachment("song.mp3", MP3), channel=Channel(20, manage=False),
+                      detection_channel=channel)
+    first = handle(runtime, message)
+    assert handle(runtime, message) == first
+    assert message.deletes == 0
+    assert len(channel.sent) == 1
+    assert "delete_permission_missing" not in str(runtime.activity.recent())
+
+
+def test_mode_change_during_fetch_applies_at_enforcement_decision(tmp_path):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, "auto_delete")
+
+    async def fetch(item):
+        runtime.database.save_protection(1, True, [], True, 40, (), "allow", "warn_only")
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    message = Message(attachment("song.mp3", MP3), detection_channel=channel)
+    assert handle(runtime, message)[0].status is Status.MATCH
+    assert message.deletes == 0
+    assert len(channel.sent) == 1
+    assert channel.sent[0]["embed"].title == "Audio file detected"
+
+
+def test_auto_delete_failure_retains_existing_no_notice_behavior(tmp_path):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, "auto_delete")
+    message = Message(attachment("song.mp3", MP3), fail_delete=True, detection_channel=channel)
+    assert handle(runtime, message)[0].status is Status.MATCH
+    assert message.deletes == 1
+    assert channel.sent == []
+    assert "delete_failed" in str(runtime.activity.recent())
+
+
+@pytest.mark.parametrize("mode", ["warn_only", "auto_delete"])
+@pytest.mark.parametrize("action,expected_notices", [("allow", 0), ("report", 1)])
+def test_unresolved_action_unchanged_by_moderation_mode(tmp_path, mode, action, expected_notices):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, mode, unresolved_action=action)
+    message = Message(attachment("song.mp3", None, size=100), detection_channel=channel)
+    assert handle(runtime, message)[0].status is Status.UNAVAILABLE
+    assert message.deletes == 0
+    assert len(channel.sent) == expected_notices
+    if expected_notices:
+        assert channel.sent[0]["embed"].title == "Inspection inconclusive"
+
+
+@pytest.mark.parametrize("mode", ["warn_only", "auto_delete"])
+def test_audio_exemption_unchanged_by_moderation_mode(tmp_path, mode):
+    channel = Channel(40)
+    runtime = mode_setup(tmp_path, mode, exempt_roles=(70,))
+    fetched = []
+
+    async def fetch(item):
+        fetched.append(item)
+        return item.content
+
+    runtime.discord.fetch_prefix = fetch
+    message = with_roles(Message(attachment("song.mp3", MP3), forward=True, detection_channel=channel), 70)
+    message.message_snapshots = []
+    assert handle(runtime, message) == ()
+    assert fetched == []
+    assert message.deletes == 0
+    assert channel.sent == []

@@ -13,6 +13,7 @@ class Config:
     protected_channel_ids: tuple[int, ...] = ()
     notifications_enabled: bool = False
     detection_channel_id: int | None = None
+    moderation_mode: str = "auto_delete"
 
 
 def load(root: Path | None = None) -> Config:
@@ -33,11 +34,16 @@ def load(root: Path | None = None) -> Config:
     channels = protection.get("channel_ids", [])
     notifications = protection.get("notifications_enabled", False)
     detection_channel = protection.get("detection_channel_id")
+    moderation_mode = protection.get("moderation_mode", "auto_delete")
     if not isinstance(enabled, bool) or not isinstance(notifications, bool):
         raise ValueError("Invalid protection configuration")
     if not isinstance(channels, list) or any(type(value) is not int or value <= 0 for value in channels):
         raise ValueError("Invalid protected channel IDs")
     if detection_channel is not None and (type(detection_channel) is not int or detection_channel <= 0):
         raise ValueError("Invalid detection channel ID")
+    if moderation_mode not in ("warn_only", "auto_delete"):
+        raise ValueError("Invalid moderation mode")
+    if enabled and moderation_mode == "warn_only" and (not notifications or detection_channel is None):
+        raise ValueError("Warn / Log Only requires Detection notifications and a channel")
     return Config(bool(discord.get("enabled", False)), host, port,
-                  enabled, tuple(channels), notifications, detection_channel)
+                  enabled, tuple(channels), notifications, detection_channel, moderation_mode)

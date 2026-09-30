@@ -29,7 +29,7 @@ def test_migration_idempotent(tmp_path):
     db.migrate()
     db.migrate()
     with db.connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 5
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 def test_legacy_attachment_size_setting_is_ignored(tmp_path):
@@ -51,6 +51,26 @@ def test_legacy_retention_setting_is_ignored(tmp_path):
     )
     assert load(tmp_path).protection_enabled is True
     assert not hasattr(load(tmp_path), "detection_retention_days")
+
+
+def test_legacy_global_protection_defaults_to_auto_delete(tmp_path):
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"protection": {"enabled": True}}), encoding="utf-8")
+    assert load(tmp_path).moderation_mode == "auto_delete"
+    path.write_text(json.dumps({"protection": {"moderation_mode": "warn_only"}}), encoding="utf-8")
+    assert load(tmp_path).moderation_mode == "warn_only"
+    path.write_text(json.dumps({"protection": {"enabled": True, "moderation_mode": "warn_only"}}), encoding="utf-8")
+    import pytest
+    with pytest.raises(ValueError):
+        load(tmp_path)
+    path.write_text(json.dumps({"protection": {"enabled": True, "moderation_mode": "warn_only",
+                                               "notifications_enabled": True, "detection_channel_id": 40}}), encoding="utf-8")
+    assert load(tmp_path).moderation_mode == "warn_only"
+    path.write_text(json.dumps({"protection": {"moderation_mode": "delete"}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load(tmp_path)
 
 
 class FakeClient:

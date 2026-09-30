@@ -30,12 +30,25 @@ def _has_exempt_role(author, exempt_role_ids):
 
 def make_client(service):
     import discord
+    from discord import app_commands
+    from .discord_commands import register_commands
     intents = discord.Intents.none()
     intents.guilds = True
     intents.messages = True
     intents.message_content = True
 
     class Client(discord.Client):
+        def __init__(self):
+            super().__init__(intents=intents)
+            self.tree = app_commands.CommandTree(self)
+            register_commands(self.tree, service)
+
+        async def setup_hook(self):
+            try:
+                await self.tree.sync()
+            except Exception:
+                service.activity.record("Error", "discord_command_sync_failed")
+
         async def on_ready(self):
             service._ready(len(self.guilds))
 
@@ -59,7 +72,7 @@ def make_client(service):
             except Exception:
                 service.activity.record("Error", "discord_intake_error")
 
-    return Client(intents=intents)
+    return Client()
 
 
 class DiscordService:
@@ -108,22 +121,22 @@ class DiscordService:
             return {"state": self._state, "gateway": self._gateway, "guild_count": self._guild_count,
                     "ready_at": self._ready_at, "reconnect_count": self._reconnects}
 
+    def guild_inventory(self, guild):
+        channels = []
+        forum_ids = {forum.id for forum in guild.forums}
+        for channel in [*guild.text_channels, *guild.forums]:
+            permissions = channel.permissions_for(guild.me) if guild.me else None
+            visible = bool(permissions and permissions.view_channel)
+            channels.append({"id": str(channel.id), "name": channel.name,
+                             "can_protect": visible and bool(permissions.manage_messages),
+                             "can_notify": visible and bool(permissions.send_messages)
+                             and channel.id not in forum_ids})
+        roles = [{"id": str(role.id), "name": role.name} for role in guild.roles
+                 if not role.is_default() and not role.managed]
+        return {"id": str(guild.id), "name": guild.name, "channels": channels, "roles": roles}
+
     async def _inventory(self, client):
-        guilds = []
-        for guild in client.guilds:
-            channels = []
-            forum_ids = {forum.id for forum in guild.forums}
-            for channel in [*guild.text_channels, *guild.forums]:
-                permissions = channel.permissions_for(guild.me) if guild.me else None
-                visible = bool(permissions and permissions.view_channel)
-                channels.append({"id": str(channel.id), "name": channel.name,
-                                 "can_protect": visible and bool(permissions.manage_messages),
-                                 "can_notify": visible and bool(permissions.send_messages)
-                                 and channel.id not in forum_ids})
-            roles = [{"id": str(role.id), "name": role.name} for role in guild.roles
-                     if not role.is_default() and not role.managed]
-            guilds.append({"id": str(guild.id), "name": guild.name, "channels": channels, "roles": roles})
-        return guilds
+        return [self.guild_inventory(guild) for guild in client.guilds]
 
     def inventory(self):
         with self._lock:
@@ -210,7 +223,28 @@ class DiscordService:
             await self._report_unresolved(message, results, settings)
             return results
 
+        settings = self.database.protection_for(message.guild.id, self.config)
+        if not settings["enabled"]:
+            return results
         if not self._reserve_attempt(message.id):
+            return results
+
+        mode = settings["moderation_mode"]
+        if mode == "warn_only":
+            detection_channel = self._detection_channel(message, settings)
+            if detection_channel is None:
+                self.activity.record("Error", "detection_notification_unavailable")
+                return results
+            try:
+                await detection_channel.send(
+                    embed=detection_embed(message, match, datetime.now(timezone.utc), mode),
+                    allowed_mentions=AllowedMentions.none(),
+                )
+            except Exception:
+                self.activity.record("Error", "detection_notification_failed")
+            return results
+        if mode != "auto_delete":
+            self.activity.record("Error", "invalid_moderation_mode")
             return results
 
         member = message.guild.me

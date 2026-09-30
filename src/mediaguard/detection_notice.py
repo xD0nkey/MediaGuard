@@ -5,6 +5,7 @@ import discord
 
 
 BLOCKED_COLOR = 0xD94A4A
+WARN_COLOR = 0xD9A441
 UNRESOLVED_COLOR = 0xD9A441
 UNRESOLVED_REASONS = {
     "size_unavailable": "The attachment size was not available.",
@@ -26,18 +27,22 @@ def _label(value, limit):
     return discord.utils.escape_markdown(cleaned).strip()[:limit]
 
 
-def detection_embed(message, result, deleted_at: datetime):
-    if deleted_at.tzinfo is None or deleted_at.utcoffset() is None:
-        raise ValueError("Deletion timestamp must be timezone-aware")
+def detection_embed(message, result, action_at: datetime, moderation_mode="auto_delete"):
+    if action_at.tzinfo is None or action_at.utcoffset() is None:
+        raise ValueError("Notification timestamp must be timezone-aware")
     names = {"mp3": "MP3", "wav": "WAV", "flac": "FLAC", "opus": "Ogg Opus",
              "ogg-vorbis": "Ogg Vorbis", "m4a": "M4A"}
     phrase_match = result.rule_id is not None
+    warn_only = moderation_mode == "warn_only"
     embed = discord.Embed(
-        title="Blocked embed phrase" if phrase_match else "Audio file blocked",
-        description="A configured embed phrase was detected and removed." if phrase_match else
-                    "A prohibited audio file was detected and removed.",
-        color=BLOCKED_COLOR,
-        timestamp=deleted_at,
+        title=("Embed phrase detected" if phrase_match else "Audio file detected") if warn_only else
+              ("Blocked embed phrase" if phrase_match else "Audio file blocked"),
+        description=("A configured embed phrase was detected. The original message was retained." if phrase_match else
+                     "A prohibited audio file was detected. The original message was retained.") if warn_only else
+                    ("A configured embed phrase was detected and removed." if phrase_match else
+                     "A prohibited audio file was detected and removed."),
+        color=WARN_COLOR if warn_only else BLOCKED_COLOR,
+        timestamp=action_at,
     )
     author = _label(getattr(message.author, "display_name", str(message.author.id)), 200) or str(message.author.id)
     avatar = getattr(message.author, "display_avatar", None)
@@ -56,8 +61,14 @@ def detection_embed(message, result, deleted_at: datetime):
     else:
         embed.add_field(name="Detected as", value=f"{names[result.media_type]} audio", inline=True)
         embed.add_field(name="Source", value="Forwarded message" if result.source == "forward" else "Direct attachment", inline=True)
-    embed.add_field(name="Action", value="Message deleted", inline=False)
-    embed.add_field(name="Deleted at", value=f"<t:{int(deleted_at.timestamp())}:F>", inline=False)
+    if warn_only:
+        embed.add_field(name="Mode", value="Warn / Log Only", inline=False)
+        embed.add_field(name="Action", value="No automatic deletion", inline=False)
+        embed.add_field(name="Message", value=f"[Jump to message]({message.jump_url})", inline=False)
+        embed.add_field(name="Detected at", value=f"<t:{int(action_at.timestamp())}:F>", inline=False)
+    else:
+        embed.add_field(name="Action", value="Message deleted", inline=False)
+        embed.add_field(name="Deleted at", value=f"<t:{int(action_at.timestamp())}:F>", inline=False)
     embed.set_footer(text="MediaGuard")
     return embed
 

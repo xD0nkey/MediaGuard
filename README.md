@@ -1,6 +1,6 @@
 # MediaGuard
 
-MediaGuard is a Discord moderation bot that watches protected channels, detects configured prohibited content, and deletes the containing message. A local dashboard controls protection and moderator notifications.
+MediaGuard is a Discord moderation bot that watches protected channels and detects configured prohibited content. It can report matches without deleting messages or automatically delete them. A local dashboard and Discord admin commands control protection and moderator notifications.
 
 ## Detection
 
@@ -9,7 +9,39 @@ MediaGuard is a Discord moderation bot that watches protected channels, detects 
 
 ## Moderation flow
 
-Detect → delete → notify → clean up → forget. After Discord confirms deletion, MediaGuard can post a Detection notification in the configured moderator channel. That channel is the moderator-facing audit trail. MediaGuard does not write new moderation-event history or retain attachment copies. Protection settings and blocked phrases remain saved locally.
+Detect → apply the selected moderation mode → notify → clean up → forget. **Warn / Log Only** reports confirmed matches to the Detection channel and leaves the original message in place. **Auto Delete** deletes qualifying messages and can notify moderators after Discord confirms deletion. MediaGuard does not write new moderation-event history or retain attachment copies. Protection settings and blocked phrases remain saved locally.
+
+## Discord admin commands
+
+Commands are available in servers to members with **Manage Server** permission. MediaGuard checks this permission when each command runs, and replies privately. Commands use the same saved guild settings as the dashboard. Restart the bot after updating MediaGuard so it can register the commands.
+
+| Command | What it does |
+| --- | --- |
+| `/protection status` | Shows the current protection, channel, notification, exemption, moderation-mode, and blocked-phrase settings. |
+| `/protection enable` | Turns on message protection. |
+| `/protection disable` | Turns off message protection. |
+| `/protection-channels all` | Protects all relevant channels the bot can access. |
+| `/protection-channels add <channel>` | Selects a text or forum channel for protection. |
+| `/protection-channels remove <channel>` | Removes a selected channel. The last selected channel cannot be removed because an empty selection means all relevant channels. |
+| `/protection-channels list` | Shows the selected channels or the all-channels setting. |
+| `/exempt-role add <role>` | Exempts a role from audio enforcement; blocked embed phrases still apply. |
+| `/exempt-role remove <role>` | Removes an audio exemption. |
+| `/exempt-role list` | Shows audio-exempt roles. |
+| `/moderation-mode warn-only` | Reports confirmed matches without deleting the original message. Detection notifications must be enabled while protection is on. |
+| `/moderation-mode auto-delete` | Requests Auto Delete. A private confirmation is required before the mode changes. |
+| `/detection-notifications enable` | Turns on Detection channel reports; a Detection channel must be set first. |
+| `/detection-notifications disable` | Turns off reports and clears the Detection channel, unless active Warn / Log Only protection requires reports. |
+| `/detection-channel set <channel>` | Chooses a text channel where the bot can send Detection reports. |
+| `/detection-channel clear` | Clears the channel when notifications are off. |
+| `/unconfirmed allow` | Allows inconclusive audio without a Detection report. |
+| `/unconfirmed report` | Reports inconclusive audio to the Detection channel when notifications are enabled. Inconclusive audio is never deleted. |
+| `/blocked-phrase add <phrase>` | Adds and enables a phrase matched against Discord embed text. |
+| `/blocked-phrase remove <phrase>` | Removes an existing blocked phrase. |
+| `/blocked-phrase enable <phrase>` | Enables an existing blocked phrase. |
+| `/blocked-phrase disable <phrase>` | Disables an existing blocked phrase without removing it. |
+| `/blocked-phrase list` | Shows the configured phrases and whether each is enabled. |
+
+Role and channel options use Discord's native picker. To edit a blocked phrase or its display name, use the dashboard.
 
 ## Setup and running
 
