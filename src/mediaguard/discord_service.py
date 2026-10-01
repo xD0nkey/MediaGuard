@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
-from discord import AllowedMentions, MessageReferenceType
+from pathlib import Path
+from discord import AllowedMentions, HTTPException, MessageReferenceType
 
 from .activity import Activity
 from .detection_notice import detection_embed, unresolved_embed
@@ -12,6 +15,15 @@ from .attachments import (
     Status,
     download_prefix,
     inspect_attachment,
+)
+
+
+logger = logging.getLogger(__name__)
+SAFE_DISCORD_ERRORS = {"Missing Permissions", "Missing Access", "Unknown Channel", "Unknown Message"}
+NOTIFICATION_PERMISSIONS = (
+    "view_channel", "send_messages", "embed_links", "attach_files", "read_message_history",
+    "add_reactions", "send_messages_in_threads", "create_public_threads", "create_private_threads",
+    "manage_messages", "manage_threads", "mention_everyone",
 )
 
 
@@ -234,14 +246,17 @@ class DiscordService:
             detection_channel = self._detection_channel(message, settings)
             if detection_channel is None:
                 self.activity.record("Error", "detection_notification_unavailable")
+                self._log_notification_unavailable(message, settings)
                 return results
             try:
                 await detection_channel.send(
                     embed=detection_embed(message, match, datetime.now(timezone.utc), mode),
                     allowed_mentions=AllowedMentions.none(),
                 )
-            except Exception:
+            except Exception as error:
                 self.activity.record("Error", "detection_notification_failed")
+                self._log_notification_failure(message, settings, detection_channel, error)
+                self._log_notification_permissions(message, detection_channel)
             return results
         if mode != "auto_delete":
             self.activity.record("Error", "invalid_moderation_mode")
@@ -266,20 +281,99 @@ class DiscordService:
         if settings["notifications_enabled"]:
             if not can_notify:
                 self.activity.record("Error", "detection_notification_unavailable")
+                self._log_notification_unavailable(message, settings)
                 return results
             try:
                 await detection_channel.send(embed=detection_embed(message, match, deleted_at), allowed_mentions=AllowedMentions.none())
-            except Exception:
+            except Exception as error:
                 self.activity.record("Error", "detection_notification_failed")
+                self._log_notification_failure(message, settings, detection_channel, error)
+                self._log_notification_permissions(message, detection_channel)
         return results
 
     def _detection_channel(self, message, settings):
         member = message.guild.me
-        channel = message.guild.get_channel(settings["detection_channel_id"]) if settings["detection_channel_id"] else None
-        permissions = channel.permissions_for(member) if channel and member else None
-        if permissions and permissions.view_channel and permissions.send_messages:
-            return channel
-        return None
+        channel = None
+        try:
+            channel = message.guild.get_channel(settings["detection_channel_id"]) if settings["detection_channel_id"] else None
+            permissions = channel.permissions_for(member) if channel and member else None
+            if permissions and permissions.view_channel and permissions.send_messages:
+                return channel
+            return None
+        except Exception as error:
+            self._log_notification_failure(message, settings, channel, error, operation="resolve")
+            raise
+
+    def _log_notification_failure(self, message, settings, channel, error, *, operation="send"):
+        fields = (message.guild.id, settings["detection_channel_id"],
+                  channel.id if channel else None, channel is not None, type(error).__name__)
+        if isinstance(error, HTTPException):
+            detail = error.text if error.text in SAFE_DISCORD_ERRORS else "omitted"
+            logger.error(
+                "detection_notification_failed operation=%s guild_id=%s configured_channel_id=%s "
+                "resolved_channel_id=%s resolved_channel=%s exception=%s status=%s code=%s message=%s",
+                operation, *fields, error.status, error.code, detail,
+            )
+        else:
+            frames = " -> ".join(
+                f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+                for frame in traceback.extract_tb(error.__traceback__)
+            )
+            logger.error(
+                "detection_notification_failed operation=%s guild_id=%s configured_channel_id=%s "
+                "resolved_channel_id=%s resolved_channel=%s exception=%s message=omitted traceback=%s",
+                operation, *fields, frames,
+            )
+
+    def _log_notification_unavailable(self, message, settings):
+        configured = settings["detection_channel_id"]
+        channel = None
+        try:
+            if configured is None:
+                reason = "channel_not_configured"
+            else:
+                channel = message.guild.get_channel(configured)
+                if channel is None:
+                    reason = "channel_not_resolved"
+                elif message.guild.me is None:
+                    reason = "bot_member_unavailable"
+                else:
+                    permissions = channel.permissions_for(message.guild.me)
+                    if not permissions.view_channel:
+                        reason = "missing_access"
+                    elif not permissions.send_messages:
+                        reason = "missing_permissions"
+                    else:
+                        reason = "resolution_changed"
+            logger.error(
+                "detection_notification_unavailable guild_id=%s configured_channel_id=%s "
+                "resolved_channel_id=%s resolved_channel=%s reason=%s",
+                message.guild.id, configured, channel.id if channel else None, channel is not None, reason,
+            )
+        except Exception as error:
+            self._log_notification_failure(message, settings, channel, error)
+
+    def _log_notification_permissions(self, message, channel):
+        try:
+            member = message.guild.me
+            if member is None:
+                raise ValueError("bot_member_unavailable")
+            permissions = channel.permissions_for(member)
+            channel_type = getattr(channel, "type", None)
+            fields = " ".join(
+                f"{name}={getattr(permissions, name, 'unavailable')}" for name in NOTIFICATION_PERMISSIONS
+            )
+            logger.error(
+                "detection_notification_permissions guild_id=%s channel_id=%s channel_type=%s "
+                "category_id=%s %s",
+                message.guild.id, channel.id, getattr(channel_type, "name", type(channel).__name__),
+                getattr(channel, "category_id", None), fields,
+            )
+        except Exception as error:
+            logger.error(
+                "detection_notification_permissions guild_id=%s channel_id=%s unavailable=%s",
+                getattr(message.guild, "id", None), getattr(channel, "id", None), type(error).__name__,
+            )
 
     async def _report_unresolved(self, message, results, settings):
         unresolved = next((result for result in results if result.status is Status.UNAVAILABLE), None)
